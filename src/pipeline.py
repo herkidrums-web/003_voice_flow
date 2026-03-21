@@ -8,11 +8,23 @@ import time
 from pathlib import Path
 
 from config import NonRetryableError, RetryableError, VoiceFlowError, get_settings
+from src.dictionary import load_dictionary
 from src.notion_writer import create_meeting_note
 from src.stt import process_audio
 from src.summarizer import summarize_transcript
 
 log = logging.getLogger(__name__)
+
+# Module-level dictionary cache (loaded once per daemon lifecycle)
+_dictionary_hints: str | None = None
+
+
+def _get_dictionary() -> str:
+    """Lazy-load and cache the proper noun dictionary."""
+    global _dictionary_hints
+    if _dictionary_hints is None:
+        _dictionary_hints = load_dictionary()
+    return _dictionary_hints
 
 
 def _notify_error(title: str, message: str) -> None:
@@ -135,8 +147,10 @@ def process_file(audio_path: str) -> str | None:
 
         # Step 2: Claude 2-pass (STT correction → comprehensive analysis)
         log.info(f"[2/3] Claude 분석 시작: {filename}")
+        hints = _get_dictionary()
         analysis = _retry_with_backoff(
-            summarize_transcript, transcript.full_text, transcript.duration, recording_date
+            summarize_transcript, transcript.full_text, transcript.duration,
+            recording_date, hints
         )
 
         # Step 3: Notion Page Creation

@@ -84,15 +84,19 @@ CORRECTION_PROMPT = """\
 """
 
 
-def correct_transcript(raw_text: str) -> str:
-    """Pass 1: Correct STT errors using Claude."""
+def correct_transcript(raw_text: str, dictionary_hints: str = "") -> str:
+    """Pass 1: Correct STT errors using Claude with optional proper noun hints."""
     if not raw_text.strip():
         return raw_text
+
+    hint_section = ""
+    if dictionary_hints:
+        hint_section = f"\n\n{dictionary_hints}\n\n"
 
     log.info("Pass 1: STT 교정 시작...")
     corrected = _call_claude(
         system=CORRECTION_PROMPT,
-        user=f"아래 전사본을 교정해주세요:\n\n{raw_text}",
+        user=f"{hint_section}아래 전사본을 교정해주세요:\n\n{raw_text}",
     )
     log.info(f"Pass 1 완료 ({len(raw_text)}자 → {len(corrected)}자)")
     return corrected
@@ -288,13 +292,14 @@ def analyze_transcript(corrected_text: str, duration: float, recording_date: str
     )
 
 
-def summarize_transcript(full_text: str, duration: float, recording_date: str = "") -> MeetingAnalysis:
+def summarize_transcript(full_text: str, duration: float, recording_date: str = "",
+                         dictionary_hints: str = "") -> MeetingAnalysis:
     """Full 2-pass pipeline: correct → analyze.
 
     This is the main entry point called by pipeline.py.
     """
-    # Pass 1: STT correction
-    corrected = correct_transcript(full_text)
+    # Pass 1: STT correction with proper noun hints
+    corrected = correct_transcript(full_text, dictionary_hints)
 
     # Pass 2: Comprehensive analysis
     return analyze_transcript(corrected, duration, recording_date)
