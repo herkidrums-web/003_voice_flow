@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+dist/
+
+# Node
+node_modules/
+frontend/dist/
+
+# Environment
+.env
+*.local
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+
+# Whisper models
+models/
+
+# Voice Flow daemon
+processed.log
+*.processing
+daemon.log
+daemon-error.log
+voiceflow.log
+
+# Temp / E2E logs
+e2e_*.txt
+e2e_*.log
+*.log
+
+# Legacy
+backend/
+frontend/
