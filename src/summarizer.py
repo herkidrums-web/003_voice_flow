@@ -117,7 +117,7 @@ ANALYSIS_PROMPT = """\
 JSON 스키마:
 {
   "properties": {
-    "title": "YYYYMMDD_조직_주제 형식의 제목 (예: 20260319_내부_업무보고체계논의)",
+    "title": "반드시 YYYYMMDD_조직또는상대_구체적주제 형식. 날짜는 녹음 날짜 사용. 예: 20260319_내부_업무보고체계논의, 20260320_토스_데이터센터이전논의. 절대 '미팅노트' 같은 일반적 이름 금지.",
     "type": "회의 유형. 반드시 다음 중 택1: 회의, 회식/네트워킹, 전략/의사결정, 아이디어/브레인스토밍, 고객미팅, 개인메모, 조직/인사, 출장",
     "project": "관련 프로젝트명 (없으면 빈 문자열)",
     "client": "고객명 (없으면 빈 문자열)",
@@ -255,9 +255,15 @@ def analyze_transcript(corrected_text: str, duration: float, recording_date: str
     props = data.get("properties", {})
     content = data.get("content", {})
 
+    # Fallback title with recording date if generic
+    raw_title = props.get("title", "")
+    if not raw_title or raw_title in ("미팅노트", "회의록"):
+        date_prefix = recording_date.replace("-", "") if recording_date else ""
+        raw_title = f"{date_prefix}_음성메모" if date_prefix else "음성메모"
+
     return MeetingAnalysis(
         properties=MeetingProperties(
-            title=props.get("title", "미팅노트"),
+            title=raw_title,
             meeting_type=props.get("type", "회의"),
             project=props.get("project", ""),
             client=props.get("client", ""),
