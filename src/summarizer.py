@@ -6,6 +6,7 @@ import logging
 from dataclasses import dataclass, field
 
 import anthropic
+import httpx
 
 from config import NonRetryableError, RetryableError, SummaryError, get_settings
 
@@ -19,7 +20,10 @@ def _get_client() -> anthropic.Anthropic:
     global _client
     if _client is None:
         settings = get_settings()
-        _client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+        _client = anthropic.Anthropic(
+            api_key=settings.anthropic_api_key,
+            timeout=httpx.Timeout(600.0, connect=10.0),
+        )
     return _client
 
 
