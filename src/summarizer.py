@@ -29,12 +29,14 @@ def _call_claude(system: str, user: str) -> str:
     client = _get_client()
 
     try:
-        response = client.messages.create(
+        # Use streaming to avoid timeout on long requests
+        with client.messages.stream(
             model=settings.claude_model,
             max_tokens=settings.claude_max_tokens,
             system=system,
             messages=[{"role": "user", "content": user}],
-        )
+        ) as stream:
+            response = stream.get_final_message()
     except anthropic.RateLimitError as e:
         raise RetryableError(f"Claude rate limit: {e}", status_code=429) from e
     except anthropic.InternalServerError as e:
@@ -112,7 +114,7 @@ JSON 스키마:
 {
   "properties": {
     "title": "YYYYMMDD_조직_주제 형식의 제목 (예: 20260319_내부_업무보고체계논의)",
-    "type": "회의 유형 (회의/회식·네트워킹/전략·의사결정/아이디어·브레인스토밍/고객미팅/개인메모/조직·인사/출장 중 택1)",
+    "type": "회의 유형. 반드시 다음 중 택1: 회의, 회식/네트워킹, 전략/의사결정, 아이디어/브레인스토밍, 고객미팅, 개인메모, 조직/인사, 출장",
     "project": "관련 프로젝트명 (없으면 빈 문자열)",
     "client": "고객명 (없으면 빈 문자열)",
     "related_people": ["언급된 인물명"],

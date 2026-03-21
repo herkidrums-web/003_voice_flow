@@ -1,6 +1,7 @@
 """Tests for 2-pass summarizer with mocked Claude API."""
 import json
-from unittest.mock import MagicMock, call, patch
+from contextlib import contextmanager
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -62,8 +63,22 @@ MOCK_ANALYSIS_JSON = {
 MOCK_SETTINGS = MagicMock(
     anthropic_api_key="test-key",
     claude_model="claude-sonnet-4-5-20250929",
-    claude_max_tokens=16384,
+    claude_max_tokens=65536,
 )
+
+
+def _make_stream_mock(text: str):
+    """Create a mock for client.messages.stream() context manager."""
+    mock_response = MagicMock()
+    mock_response.content = [MagicMock(text=text)]
+
+    @contextmanager
+    def stream_cm(**kwargs):
+        mock_stream = MagicMock()
+        mock_stream.get_final_message.return_value = mock_response
+        yield mock_stream
+
+    return stream_cm
 
 
 @pytest.fixture(autouse=True)
@@ -74,7 +89,7 @@ def mock_settings():
 
 @pytest.fixture
 def mock_claude():
-    """Mock Claude to return analysis JSON."""
+    """Mock the Claude API client."""
     with patch("src.summarizer._get_client") as mock_get:
         mock_client = MagicMock()
         mock_get.return_value = mock_client
@@ -83,32 +98,37 @@ def mock_claude():
 
 class TestCorrectTranscript:
     def test_returns_corrected_text(self, mock_claude):
-        mock_claude.messages.create.return_value = MagicMock(
-            content=[MagicMock(text="교정된 전사본 텍스트")]
-        )
+        mock_claude.messages.stream = _make_stream_mock("교정된 전사본 텍스트")
         result = correct_transcript("원본 전사본 텍스트")
         assert result == "교정된 전사본 텍스트"
 
     def test_empty_text_returns_as_is(self, mock_claude):
         result = correct_transcript("")
         assert result == ""
-        mock_claude.messages.create.assert_not_called()
 
     def test_passes_correction_prompt(self, mock_claude):
-        mock_claude.messages.create.return_value = MagicMock(
-            content=[MagicMock(text="결과")]
-        )
+        calls = []
+
+        @contextmanager
+        def capture_stream(**kwargs):
+            calls.append(kwargs)
+            mock_stream = MagicMock()
+            mock_resp = MagicMock()
+            mock_resp.content = [MagicMock(text="결과")]
+            mock_stream.get_final_message.return_value = mock_resp
+            yield mock_stream
+
+        mock_claude.messages.stream = capture_stream
         correct_transcript("테스트 입력")
-        call_args = mock_claude.messages.create.call_args
-        system = call_args.kwargs["system"]
-        assert "음성인식" in system
-        assert "교정" in system
+        assert len(calls) == 1
+        assert "음성인식" in calls[0]["system"]
+        assert "교정" in calls[0]["system"]
 
 
 class TestAnalyzeTranscript:
     def test_returns_meeting_analysis(self, mock_claude):
-        mock_claude.messages.create.return_value = MagicMock(
-            content=[MagicMock(text=json.dumps(MOCK_ANALYSIS_JSON, ensure_ascii=False))]
+        mock_claude.messages.stream = _make_stream_mock(
+            json.dumps(MOCK_ANALYSIS_JSON, ensure_ascii=False)
         )
         result = analyze_transcript("테스트 전사본", 300.0, "2026-03-19")
         assert isinstance(result, MeetingAnalysis)
@@ -123,26 +143,31 @@ class TestAnalyzeTranscript:
             analyze_transcript("", 60.0)
 
     def test_invalid_json_raises_error(self, mock_claude):
-        mock_claude.messages.create.return_value = MagicMock(
-            content=[MagicMock(text="not valid json")]
-        )
+        mock_claude.messages.stream = _make_stream_mock("not valid json")
         with pytest.raises(SummaryError, match="invalid JSON"):
             analyze_transcript("test input", 60.0)
 
     def test_includes_duration_and_date(self, mock_claude):
-        mock_claude.messages.create.return_value = MagicMock(
-            content=[MagicMock(text=json.dumps(MOCK_ANALYSIS_JSON, ensure_ascii=False))]
-        )
+        calls = []
+
+        @contextmanager
+        def capture_stream(**kwargs):
+            calls.append(kwargs)
+            mock_stream = MagicMock()
+            mock_resp = MagicMock()
+            mock_resp.content = [MagicMock(text=json.dumps(MOCK_ANALYSIS_JSON, ensure_ascii=False))]
+            mock_stream.get_final_message.return_value = mock_resp
+            yield mock_stream
+
+        mock_claude.messages.stream = capture_stream
         analyze_transcript("테스트", 600.0, "2026-03-20")
-        user_msg = mock_claude.messages.create.call_args.kwargs["messages"][0]["content"]
+        user_msg = calls[0]["messages"][0]["content"]
         assert "10.0분" in user_msg
         assert "2026-03-20" in user_msg
 
     def test_strips_code_fences(self, mock_claude):
         fenced = "```json\n" + json.dumps(MOCK_ANALYSIS_JSON, ensure_ascii=False) + "\n```"
-        mock_claude.messages.create.return_value = MagicMock(
-            content=[MagicMock(text=fenced)]
-        )
+        mock_claude.messages.stream = _make_stream_mock(fenced)
         result = analyze_transcript("테스트", 300.0)
         assert result.properties.title == "20260319_내부_업무보고체계논의"
 
@@ -150,20 +175,38 @@ class TestAnalyzeTranscript:
 class TestSummarizeTranscript:
     def test_calls_both_passes(self, mock_claude):
         """summarize_transcript should call Claude twice (correction + analysis)."""
-        mock_claude.messages.create.side_effect = [
-            MagicMock(content=[MagicMock(text="교정된 텍스트")]),
-            MagicMock(content=[MagicMock(text=json.dumps(MOCK_ANALYSIS_JSON, ensure_ascii=False))]),
-        ]
+        call_count = [0]
+
+        @contextmanager
+        def multi_stream(**kwargs):
+            responses = [
+                "교정된 텍스트",
+                json.dumps(MOCK_ANALYSIS_JSON, ensure_ascii=False),
+            ]
+            mock_stream = MagicMock()
+            mock_resp = MagicMock()
+            mock_resp.content = [MagicMock(text=responses[call_count[0]])]
+            mock_stream.get_final_message.return_value = mock_resp
+            call_count[0] += 1
+            yield mock_stream
+
+        mock_claude.messages.stream = multi_stream
         result = summarize_transcript("원본 텍스트", 300.0, "2026-03-19")
-        assert mock_claude.messages.create.call_count == 2
+        assert call_count[0] == 2
         assert isinstance(result, MeetingAnalysis)
 
     def test_rate_limit_raises_retryable(self, mock_claude):
         import anthropic as _anthropic
-        mock_claude.messages.create.side_effect = _anthropic.RateLimitError(
-            message="rate limited",
-            response=MagicMock(status_code=429, headers={}),
-            body=None,
-        )
+
+        @contextmanager
+        def error_stream(**kwargs):
+            raise _anthropic.RateLimitError(
+                message="rate limited",
+                response=MagicMock(status_code=429, headers={}),
+                body=None,
+            )
+            yield  # noqa: unreachable - needed for generator
+
+        mock_claude.messages.stream = error_stream
         with pytest.raises(RetryableError):
             summarize_transcript("test", 60.0)
