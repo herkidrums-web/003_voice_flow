@@ -29,12 +29,12 @@ def _get_client() -> Client:
 def _fetch_record_db_terms(client: Client) -> dict[str, list[str]]:
     """Fetch select/multi_select option names from 개인기록_DB."""
     settings = get_settings()
-    if not settings.notion_database_id:
+    if not settings.notion_data_source_id:
         return {}
 
     try:
         ds = client.data_sources.retrieve(
-            data_source_id=settings.notion_database_id
+            data_source_id=settings.notion_data_source_id
         )
     except Exception as e:
         log.warning(f"개인기록_DB 스키마 조회 실패: {e}")

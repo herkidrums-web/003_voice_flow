@@ -25,7 +25,8 @@ class Settings(BaseSettings):
     # Notion
     notion_api_key: str
     notion_parent_page_id: str
-    notion_database_id: str = ""  # 개인기록_DB data_source_id
+    notion_database_id: str = ""  # 개인기록_DB (for page creation)
+    notion_data_source_id: str = ""  # 개인기록_DB (for schema/query)
 
     # Watch directory
     watch_dir: str = str(
