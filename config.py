@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     # Anthropic
     anthropic_api_key: str
     claude_model: str = "claude-sonnet-4-5-20250929"
-    claude_max_tokens: int = 65536
+    claude_max_tokens: int = 64000
 
     # Notion
     notion_api_key: str
