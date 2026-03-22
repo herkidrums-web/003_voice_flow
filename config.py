@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     anthropic_api_key: str
     claude_model: str = "claude-sonnet-4-5-20250929"
     claude_max_tokens: int = 64000
+    claude_api_timeout: float = 1800.0
 
     # Notion
     notion_api_key: str

@@ -22,7 +22,7 @@ def _get_client() -> anthropic.Anthropic:
         settings = get_settings()
         _client = anthropic.Anthropic(
             api_key=settings.anthropic_api_key,
-            timeout=httpx.Timeout(600.0, connect=10.0),
+            timeout=httpx.Timeout(settings.claude_api_timeout, connect=10.0),
         )
     return _client
 
