@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 
 from config import get_settings
-from src.pipeline import process_file
+from src.pipeline import group_files, is_processed, process_file_group
 from src.watcher import start_watcher
 
 log = logging.getLogger(__name__)
@@ -42,9 +42,18 @@ def process_existing_files() -> None:
         log.info("미처리 파일 없음")
         return
 
-    log.info(f"기존 파일 {len(m4a_files)}개 스캔")
-    for f in m4a_files:
-        process_file(str(f))
+    # Filter already processed
+    unprocessed = [f for f in m4a_files if not is_processed(str(f))]
+    if not unprocessed:
+        log.info("미처리 파일 없음")
+        return
+
+    log.info(f"미처리 파일 {len(unprocessed)}개 스캔, 그룹핑 시작")
+    groups = group_files(unprocessed)
+    log.info(f"{len(groups)}개 그룹으로 분류됨")
+
+    for group in groups:
+        process_file_group(group)
 
 
 def _signal_handler(signum: int, _frame) -> None:

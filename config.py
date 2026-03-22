@@ -45,6 +45,11 @@ class Settings(BaseSettings):
     retry_base_delay: float = 5.0
     retry_max_delay: float = 30.0
 
+    # File grouping
+    grouping_daytime_gap: float = 300.0  # 5분 (초) — 낮 파일 간격 기준
+    grouping_evening_start_hour: int = 17  # 저녁 기준 시각
+    grouping_debounce: float = 60.0  # 와처 디바운스 대기 (초)
+
     # State
     processed_log: str = "processed.log"
 
