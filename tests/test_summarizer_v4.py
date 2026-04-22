@@ -52,3 +52,28 @@ def test_meeting_properties_has_topics_field():
     mp = MeetingProperties(title="test")
     assert hasattr(mp, "topics")
     assert isinstance(mp.topics, list)
+
+
+def test_process_file_no_participants_param():
+    """process_file에 participants_hint 파라미터가 없는지 확인."""
+    import inspect
+    from src.pipeline import process_file
+    sig = inspect.signature(process_file)
+    assert "participants_hint" not in sig.parameters
+
+
+def test_process_file_group_no_participants_param():
+    """process_file_group에 participants_hint 파라미터가 없는지 확인."""
+    import inspect
+    from src.pipeline import process_file_group
+    sig = inspect.signature(process_file_group)
+    assert "participants_hint" not in sig.parameters
+
+
+def test_process_date_exists():
+    """process_date 함수가 존재하는지 확인."""
+    from src.pipeline import process_date
+    import inspect
+    sig = inspect.signature(process_date)
+    assert "target_date" in sig.parameters
+    assert "skip_indices" in sig.parameters

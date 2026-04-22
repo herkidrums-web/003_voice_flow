@@ -1,9 +1,12 @@
 """Pipeline orchestrator: audio file -> STT -> summary -> Notion."""
 from __future__ import annotations
 
+import json
 import logging
 import os
+import shutil
 import subprocess
+import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
@@ -13,19 +16,14 @@ from src.dictionary import load_dictionary
 from src.notion_writer import create_meeting_note
 from src.stt import process_audio
 from src.summarizer import summarize_transcript
+from src.topic_merger import merge_analyses_by_topic
 
 log = logging.getLogger(__name__)
 
 # Module-level dictionary cache (loaded once per daemon lifecycle)
-_dictionary_hints: str | None = None
-
-
-def _get_dictionary() -> str:
-    """Lazy-load and cache the proper noun dictionary."""
-    global _dictionary_hints
-    if _dictionary_hints is None:
-        _dictionary_hints = load_dictionary()
-    return _dictionary_hints
+def _get_dictionary(transcript: str = "") -> str:
+    """Load proper noun dictionary, filtered by transcript content."""
+    return load_dictionary(transcript)
 
 
 def _notify_error(title: str, message: str) -> None:
@@ -44,7 +42,7 @@ def _notify_error(title: str, message: str) -> None:
 
 
 def _retry_with_backoff(func, *args, max_retries: int = 2,
-                         base_delay: float = 5.0, max_delay: float = 30.0):
+                         base_delay: float = 5.0, max_delay: float = 60.0):
     """Sync retry with exponential backoff. Retries only RetryableError."""
     last_error = None
     for attempt in range(max_retries + 1):
@@ -56,7 +54,11 @@ def _retry_with_backoff(func, *args, max_retries: int = 2,
             last_error = e
             if attempt >= max_retries:
                 break
-            delay = min(base_delay * (2 ** attempt), max_delay)
+            # Rate limit(429)은 더 긴 대기
+            if getattr(e, "status_code", None) == 429:
+                delay = min(60.0 * (2 ** attempt), 300.0)  # 60→120→300초
+            else:
+                delay = min(base_delay * (2 ** attempt), max_delay)
             log.warning(f"재시도 {attempt + 1}/{max_retries}, {delay}초 후 ({e})")
             time.sleep(delay)
         except VoiceFlowError:
@@ -69,21 +71,94 @@ def _get_processed_log_path() -> Path:
     return Path(__file__).parent.parent / get_settings().processed_log
 
 
-def is_processed(audio_path: str) -> bool:
-    """Check if file was already processed (via processed.log)."""
-    log_path = _get_processed_log_path()
-    if not log_path.exists():
-        return False
+def _get_state_path() -> Path:
+    """Return processing_state.jsonl path."""
+    return Path(__file__).parent.parent / "processing_state.jsonl"
+
+
+def get_file_stage(filename: str) -> str:
+    """Get the latest completed stage for a file.
+
+    Returns: "none" | "stt" | "claude" | "notion" | "done"
+    """
+    state_path = _get_state_path()
+    if not state_path.exists():
+        # Fallback: check legacy processed.log
+        log_path = _get_processed_log_path()
+        if log_path.exists() and filename in log_path.read_text():
+            return "done"
+        return "none"
+
+    latest_stage = "none"
+    for line in state_path.read_text(encoding="utf-8").splitlines():
+        try:
+            record = json.loads(line)
+            if record.get("file") == filename and record.get("status") == "done":
+                latest_stage = record["stage"]
+        except (json.JSONDecodeError, KeyError):
+            continue
+    return latest_stage
+
+
+def mark_stage(audio_path: str, stage: str, status: str = "done", error: str = "") -> None:
+    """Record a pipeline stage completion/failure.
+
+    Args:
+        stage: "stt" | "claude" | "notion" | "done"
+        status: "done" | "failed"
+        error: error message (if failed)
+    """
+    state_path = _get_state_path()
     filename = Path(audio_path).name
-    return filename in log_path.read_text()
+    record = {
+        "file": filename,
+        "stage": stage,
+        "status": status,
+        "ts": datetime.now().isoformat(),
+    }
+    if error:
+        record["error"] = error[:200]
+    with open(state_path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def is_processed(audio_path: str) -> bool:
+    """Check if file was fully processed. Checks both new state and legacy log."""
+    filename = Path(audio_path).name
+
+    # New state system
+    if get_file_stage(filename) == "done":
+        return True
+
+    # Legacy fallback
+    log_path = _get_processed_log_path()
+    if log_path.exists() and filename in log_path.read_text():
+        return True
+
+    return False
 
 
 def mark_processed(audio_path: str) -> None:
-    """Append filename to processed.log."""
+    """Mark file as fully processed (both new state + legacy log)."""
+    mark_stage(audio_path, "done")
+    # Legacy compatibility
     log_path = _get_processed_log_path()
     filename = Path(audio_path).name
     with open(log_path, "a") as f:
         f.write(f"{filename}\n")
+
+
+def _copy_to_temp(audio_path: str) -> str:
+    """Copy audio file to temp dir for isolated processing.
+
+    Source is now recordings_mirror/ (synced by bash script with FDA),
+    so this is just for working-copy isolation during STT.
+    """
+    tmp_dir = tempfile.mkdtemp(prefix="voiceflow_")
+    filename = Path(audio_path).name
+    tmp_path = os.path.join(tmp_dir, filename)
+    shutil.copy2(audio_path, tmp_path)
+    return tmp_path
 
 
 def wait_for_file_stability(audio_path: str) -> bool:
@@ -224,19 +299,25 @@ def process_file_group(group: list[Path]) -> str | None:
             _notify_error("VoiceFlow", f"파일 안정화 타임아웃: {p.name}")
             return None
 
+    tmp_paths = []
     try:
-        # Recording date from first file
+        # Recording datetime from first file (e.g., "20260401 093300-XXX.m4a")
         recording_date = ""
         first_name = group[0].name
-        if len(first_name) >= 8 and first_name[:8].isdigit():
+        dt = _parse_file_datetime(first_name)
+        if dt:
+            recording_date = dt.strftime("%Y-%m-%dT%H:%M:%S+09:00")
+        elif len(first_name) >= 8 and first_name[:8].isdigit():
             recording_date = f"{first_name[:4]}-{first_name[4:6]}-{first_name[6:8]}"
 
-        # Step 1: STT each file
+        # Step 1: STT each file (copy to temp to avoid TCC permission issues)
         transcripts = []
         total_duration = 0.0
         for i, p in enumerate(group):
             log.info(f"[1/3] STT ({i + 1}/{len(group)}): {p.name}")
-            t = _retry_with_backoff(process_audio, str(p))
+            tmp_path = _copy_to_temp(str(p))
+            tmp_paths.append(tmp_path)
+            t = _retry_with_backoff(process_audio, tmp_path)
             transcripts.append(t)
             total_duration += t.duration
 
@@ -247,29 +328,39 @@ def process_file_group(group: list[Path]) -> str | None:
 
         # Step 2: Claude 2-pass on combined text
         log.info(f"[2/3] Claude 분석 시작: {group_label}")
-        hints = _get_dictionary()
-        analysis = _retry_with_backoff(
+        hints = _get_dictionary(combined_text)
+        analyses = _retry_with_backoff(
             summarize_transcript, combined_text, total_duration,
             recording_date, hints
         )
 
-        # Step 3: Notion page (use first transcript for metadata)
-        log.info(f"[3/3] Notion 페이지 생성: {group_label}")
-        page_id = _retry_with_backoff(
-            create_meeting_note, analysis, transcripts[0], group_label
-        )
+        # Step 3: Notion page(s) — one per session
+        page_ids = []
+        for i, analysis in enumerate(analyses):
+            session_label = f"{group_label} (세션 {i+1}/{len(analyses)})" if len(analyses) > 1 else group_label
+            log.info(f"[3/3] Notion 페이지 생성: {session_label}")
+            page_id = _retry_with_backoff(
+                create_meeting_note, analysis, transcripts[0], group_label
+            )
+            page_ids.append(page_id)
 
         # Mark ALL files as processed
         for p in group:
             mark_processed(str(p))
 
-        log.info(f"그룹 파이프라인 완료: {group_label} → page_id={page_id}")
-        return page_id
+        page_ids_str = ", ".join(str(pid) for pid in page_ids)
+        log.info(f"그룹 파이프라인 완료: {group_label} → {len(page_ids)}개 페이지 생성 (page_ids={page_ids_str})")
+        return page_ids[0] if page_ids else None
 
     except Exception as e:
         log.error(f"그룹 파이프라인 실패: {group_label} ({e})")
         _notify_error("VoiceFlow Error", f"그룹 실패: {group_label}\n{str(e)[:100]}")
         return None
+    finally:
+        # Clean up temp files
+        for tmp_path in tmp_paths:
+            tmp_dir = os.path.dirname(tmp_path)
+            shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 def process_file(audio_path: str) -> str | None:
@@ -296,36 +387,206 @@ def process_file(audio_path: str) -> str | None:
         _notify_error("VoiceFlow", f"파일 안정화 타임아웃: {filename}")
         return None
 
+    # Check stage for resume capability
+    current_stage = get_file_stage(filename)
+    if current_stage == "done":
+        log.info(f"이미 처리 완료됨 (state), 스킵: {filename}")
+        return None
+
+    # Copy to temp dir to avoid macOS TCC permission issues with ffmpeg
+    tmp_path = _copy_to_temp(audio_path)
     try:
-        # Extract recording date from filename (e.g., "20260319 165322-8B01E3FB.m4a")
+        # Extract recording datetime from filename (e.g., "20260319 165322-8B01E3FB.m4a")
         recording_date = ""
-        if len(filename) >= 8 and filename[:8].isdigit():
+        dt = _parse_file_datetime(filename)
+        if dt:
+            recording_date = dt.strftime("%Y-%m-%dT%H:%M:%S+09:00")
+        elif len(filename) >= 8 and filename[:8].isdigit():
             recording_date = f"{filename[:4]}-{filename[4:6]}-{filename[6:8]}"
 
-        # Step 1: STT
+        # Step 1: STT (캐시 있으면 자동 스킵)
         log.info(f"[1/3] STT 시작: {filename}")
-        transcript = _retry_with_backoff(process_audio, audio_path)
+        transcript = _retry_with_backoff(process_audio, tmp_path)
+        mark_stage(audio_path, "stt")
+
+        # Skip short recordings
+        settings = get_settings()
+        if transcript.duration < settings.min_duration:
+            log.info(f"녹음 길이 {transcript.duration:.1f}초 < {settings.min_duration}초, 스킵: {filename}")
+            mark_processed(audio_path)
+            return None
+
+        # Skip trivial content (too few meaningful words)
+        meaningful_text = transcript.full_text.strip()
+        # Count Korean characters as proxy for meaningful content
+        korean_chars = sum(1 for c in meaningful_text if "\uAC00" <= c <= "\uD7A3")
+        if korean_chars < 30:
+            log.info(f"의미 있는 내용 부족 (한글 {korean_chars}자 < 30자), 스킵: {filename}")
+            mark_processed(audio_path)
+            return None
 
         # Step 2: Claude 2-pass (STT correction → comprehensive analysis)
         log.info(f"[2/3] Claude 분석 시작: {filename}")
-        hints = _get_dictionary()
-        analysis = _retry_with_backoff(
+        hints = _get_dictionary(transcript.full_text)
+        analyses = _retry_with_backoff(
+            summarize_transcript, transcript.full_text, transcript.duration,
+            recording_date, hints
+        )
+        mark_stage(audio_path, "claude")
+
+        # Step 3: Notion Page(s) Creation — one per session
+        page_ids = []
+        for i, analysis in enumerate(analyses):
+            session_label = f"{filename} (세션 {i+1}/{len(analyses)})" if len(analyses) > 1 else filename
+            log.info(f"[3/3] Notion 페이지 생성: {session_label}")
+            page_id = _retry_with_backoff(
+                create_meeting_note, analysis, transcript, filename
+            )
+            page_ids.append(page_id)
+        mark_stage(audio_path, "notion")
+
+        # Mark as fully processed
+        mark_processed(audio_path)
+        page_ids_str = ", ".join(str(pid) for pid in page_ids)
+        log.info(f"파이프라인 완료: {filename} → {len(page_ids)}개 페이지 (page_ids={page_ids_str})")
+        return page_ids[0] if page_ids else None
+
+    except Exception as e:
+        mark_stage(audio_path, "error", status="failed", error=str(e))
+        log.error(f"파이프라인 실패: {filename} ({e})")
+        _notify_error("VoiceFlow Error", f"파이프라인 실패: {filename}\n{str(e)[:100]}")
+        return None
+    finally:
+        # Clean up temp file
+        tmp_dir = os.path.dirname(tmp_path)
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def process_date(target_date: str, skip_indices: list[int] | None = None) -> list[str]:
+    """특정 날짜의 모든 미처리 음성메모를 처리하고 토픽 기반 병합 후 Notion 저장.
+
+    Args:
+        target_date: "20260422" 형식
+        skip_indices: 스킵할 파일 인덱스 (0-based). None이면 전부 처리.
+
+    Returns:
+        생성된 Notion page_id 리스트
+    """
+    settings = get_settings()
+    watch_dir = Path(settings.watch_dir)
+
+    # 1. 대상 파일 스캔
+    files = sorted(watch_dir.glob(f"{target_date}*.m4a"))
+    all_files = files.copy()
+
+    if not files:
+        log.info(f"[{target_date}] 파일 없음")
+        return []
+
+    # 2. 스킵 적용
+    if skip_indices:
+        files = [f for i, f in enumerate(files) if i not in skip_indices]
+
+    if not files:
+        log.info(f"[{target_date}] 스킵 후 처리할 파일 없음")
+        return []
+
+    log.info(f"[{target_date}] {len(files)}개 파일 처리 시작 (전체 {len(all_files)}개 중)")
+
+    # 3. 각 파일 개별 STT + Claude 분석 (Notion 저장 없이)
+    all_analyses = []  # (analysis, transcript_text) 튜플
+    for f in files:
+        if is_processed(str(f)):
+            log.info(f"이미 처리됨, 스킵: {f.name}")
+            continue
+
+        try:
+            result = _process_single_for_merge(str(f))
+            if result:
+                all_analyses.extend(result)
+        except Exception as e:
+            log.error(f"[{f.name}] 처리 실패: {e}")
+
+    if not all_analyses:
+        log.info(f"[{target_date}] 분석 결과 없음")
+        return []
+
+    # 4. 토픽 기반 병합
+    analyses_only = [a for a, _ in all_analyses]
+    merged = merge_analyses_by_topic(analyses_only)
+    log.info(f"[{target_date}] 병합 결과: {len(analyses_only)}개 → {len(merged)}개")
+
+    # 5. Notion 저장
+    page_ids = []
+    for analysis in merged:
+        try:
+            page_id = _retry_with_backoff(
+                create_meeting_note, analysis, None, f"{target_date}_merged"
+            )
+            page_ids.append(str(page_id))
+            log.info(f"Notion 페이지 생성: {analysis.properties.title} → {page_id}")
+        except Exception as e:
+            log.error(f"Notion 생성 실패: {analysis.properties.title}: {e}")
+
+    # 6. 처리 완료 기록
+    for f in files:
+        if not is_processed(str(f)):
+            mark_processed(str(f))
+
+    log.info(f"[{target_date}] 완료: {len(page_ids)}개 페이지 생성")
+    return page_ids
+
+
+def _process_single_for_merge(audio_path: str) -> list[tuple] | None:
+    """단일 파일 STT + Claude 분석. Notion 저장 없이 (analysis, transcript_text) 리스트 반환."""
+    filename = Path(audio_path).name
+
+    if not filename.endswith(".m4a"):
+        return None
+
+    # Wait for file stability
+    if not wait_for_file_stability(audio_path):
+        log.warning(f"파일 안정화 타임아웃: {filename}")
+        return None
+
+    tmp_path = _copy_to_temp(audio_path)
+    try:
+        # Recording date from filename
+        recording_date = ""
+        dt = _parse_file_datetime(filename)
+        if dt:
+            recording_date = dt.strftime("%Y-%m-%dT%H:%M:%S+09:00")
+        elif len(filename) >= 8 and filename[:8].isdigit():
+            recording_date = f"{filename[:4]}-{filename[4:6]}-{filename[6:8]}"
+
+        # STT
+        log.info(f"[STT] {filename}")
+        transcript = _retry_with_backoff(process_audio, tmp_path)
+
+        # Skip short/trivial
+        settings = get_settings()
+        if transcript.duration < settings.min_duration:
+            log.info(f"녹음 길이 {transcript.duration:.1f}초 < {settings.min_duration}초, 스킵: {filename}")
+            return None
+
+        korean_chars = sum(1 for c in transcript.full_text.strip() if "\uAC00" <= c <= "\uD7A3")
+        if korean_chars < 30:
+            log.info(f"의미 있는 내용 부족 (한글 {korean_chars}자 < 30자), 스킵: {filename}")
+            return None
+
+        # Claude analysis
+        log.info(f"[Claude] {filename}")
+        hints = _get_dictionary(transcript.full_text)
+        analyses = _retry_with_backoff(
             summarize_transcript, transcript.full_text, transcript.duration,
             recording_date, hints
         )
 
-        # Step 3: Notion Page Creation
-        log.info(f"[3/3] Notion 페이지 생성: {filename}")
-        page_id = _retry_with_backoff(
-            create_meeting_note, analysis, transcript, filename
-        )
-
-        # Mark as processed
-        mark_processed(audio_path)
-        log.info(f"파이프라인 완료: {filename} → page_id={page_id}")
-        return page_id
+        return [(a, transcript.full_text) for a in analyses]
 
     except Exception as e:
-        log.error(f"파이프라인 실패: {filename} ({e})")
-        _notify_error("VoiceFlow Error", f"파이프라인 실패: {filename}\n{str(e)[:100]}")
+        log.error(f"처리 실패: {filename} ({e})")
         return None
+    finally:
+        tmp_dir = os.path.dirname(tmp_path)
+        shutil.rmtree(tmp_dir, ignore_errors=True)
