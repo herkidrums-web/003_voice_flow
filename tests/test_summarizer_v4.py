@@ -25,3 +25,30 @@ def test_summarize_transcript_no_participants_param():
     from src.summarizer import summarize_transcript
     sig = inspect.signature(summarize_transcript)
     assert "participants_hint" not in sig.parameters
+
+
+def test_fact_extraction_prompt_has_topics_structure():
+    """FACT_EXTRACTION_PROMPT가 토픽별 육하원칙 구조를 요구하는지 확인."""
+    from src.summarizer import FACT_EXTRACTION_PROMPT
+    assert "topics" in FACT_EXTRACTION_PROMPT
+    assert "when" in FACT_EXTRACTION_PROMPT
+    assert "where" in FACT_EXTRACTION_PROMPT
+    assert "who" in FACT_EXTRACTION_PROMPT
+    assert "what" in FACT_EXTRACTION_PROMPT
+    assert "quotes" in FACT_EXTRACTION_PROMPT
+
+
+def test_meeting_content_has_topics_field():
+    """MeetingContent에 topics 필드가 있는지 확인."""
+    from src.summarizer import MeetingContent
+    mc = MeetingContent()
+    assert hasattr(mc, "topics")
+    assert isinstance(mc.topics, list)
+
+
+def test_meeting_properties_has_topics_field():
+    """MeetingProperties에 topics 필드가 있는지 확인."""
+    from src.summarizer import MeetingProperties
+    mp = MeetingProperties(title="test")
+    assert hasattr(mp, "topics")
+    assert isinstance(mp.topics, list)
