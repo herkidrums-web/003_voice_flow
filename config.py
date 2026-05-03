@@ -25,6 +25,20 @@ class Settings(BaseSettings):
     claude_max_tokens: int = 64000
     claude_api_timeout: float = 3600.0
 
+    # V3 multi-agent model assignments
+    claude_model_haiku: str = "claude-haiku-4-5-20251001"
+    claude_model_sonnet: str = "claude-sonnet-4-6"
+    claude_model_opus: str = "claude-opus-4-7"
+
+    # Self-Heal
+    self_heal_max_retries: int = 5
+
+    # Grouping (content-similarity based; time-based rules removed)
+    grouping_max_chars: int = 30000
+
+    # Wiki integration
+    wiki_index_path: str = "/Users/swlee/Documents/Coding/000_second_brain/wiki/index.md"
+
     # Notion
     notion_api_key: str
     notion_parent_page_id: str
