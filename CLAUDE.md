@@ -34,8 +34,51 @@ Apple Watch 음성메모 → STT(WhisperX) → Claude 분석 → Notion 자동 �
 - 누락 시 세컨드 브레인이 새 미팅노트를 인지하지 못하므로, 페이지 생성 → 인덱스 업데이트는 한 묶음으로 처리한다.
 
 ## launchd 데몬
-- `~/Library/LaunchAgents/com.swlee.voiceflow.plist`
-- 자동 시작, 파일 감시 → STT → 분석 → Notion
+3개 데몬이 있음:
+- `com.swlee.voiceflow-sync` — WatchPaths + 5분 주기, Voice Memos → recordings_mirror/ 복사
+- `com.swlee.voiceflow-orchestrator` — 매시 :05분, recordings_mirror/ → Notion (v3)
+- `com.swlee.voiceflow-briefing` — 평일 08:00, 일일 브리핑 생성
+
+### 데몬 상태 확인
+```bash
+launchctl list | grep voiceflow           # PID, exit code 확인
+cat /tmp/voiceflow-orchestrator.err.log  # 최근 에러
+cat orchestrator.heartbeat               # 마지막 정상 실행 시각
+```
+
+### 데몬이 죽는 주요 원인 & 수정 방법
+
+| 증상 | 원인 | 수정 |
+|------|------|------|
+| `ModuleNotFoundError: config` | PYTHONPATH 미설정 | run_orchestrator.py 상단 `sys.path.insert` 이미 수정됨 |
+| `TypeError: authentication` | .env에 `ANTHROPIC_API_KEY` 없음 | `.env`에 `ANTHROPIC_API_KEY=sk-ant-...` 추가 |
+| `exit code 2` | 배치 처리 일부 실패 | `/tmp/voiceflow-orchestrator.err.log` 확인 |
+| `sync.log stale` | Voice Memos 앱 미실행 | `open -a "Voice Memos"` 실행 후 대기 |
+
+### 데몬 재시작 구조 (KeepAlive)
+- `KeepAlive: {SuccessfulExit: false}` + `ThrottleInterval: 60`
+- 비정상 종료(exit≠0) 시 launchd가 60초 후 자동 재시작
+- 정상 종료(exit=0: no files, sync stale)는 재시작 안 함 → 다음 :05분 대기
+
+### 수동 재시작
+```bash
+launchctl unload ~/Library/LaunchAgents/com.swlee.voiceflow-orchestrator.plist
+launchctl load   ~/Library/LaunchAgents/com.swlee.voiceflow-orchestrator.plist
+```
+
+### Voice Memos iCloud 동기화 구조
+- iPhone/Watch 녹음 → iCloud → Mac Voice Memos 앱 → 로컬 폴더 (FDA 필요)
+- 로컬 경로: `~/Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings/`
+- **Voice Memos 앱이 열려있지 않으면 iCloud에서 내려오지 않음** (앱이 sync trigger)
+- 앱을 열어놓지 않아도 되도록 sync 데몬이 5분마다 fallback 폴링하지만,
+  앱이 닫혀있으면 최신 녹음이 로컬에 도착하지 않을 수 있음
+- 자동 실행: `open -a "Voice Memos"` 또는 아래 방법
+
+### ANTHROPIC_API_KEY 설정 (필수, 미설정 시 NER/Analysis 전부 실패)
+```bash
+# .env 파일에 추가 (Claude Code 키와 별도로 관리)
+echo 'ANTHROPIC_API_KEY=sk-ant-...' >> /Users/swlee/Documents/Coding/002_voice_flow_v3/.env
+```
 
 ## 테스트
 ```bash
