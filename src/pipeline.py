@@ -1,4 +1,8 @@
-"""Pipeline orchestrator: audio file -> STT -> summary -> Notion."""
+"""Legacy sequential pipeline (v2). v3+ use src.agents.orchestrator.Orchestrator.
+
+This module remains for backward-compat callers (process_date, watcher daemon).
+New code paths must go through scripts/run_orchestrator.py.
+"""
 from __future__ import annotations
 
 import json
