@@ -25,6 +25,8 @@ models/
 
 # Voice Flow daemon
 processed.log
+processing_state.jsonl
+.stt_cache/
 *.processing
 daemon.log
 daemon-error.log
@@ -38,3 +40,8 @@ e2e_*.log
 # Legacy
 backend/
 frontend/
+
+# Worktree-local symlinks (point to main worktree)
+poc/.venv
+recordings_mirror
+.stt_cache

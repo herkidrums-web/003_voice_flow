@@ -14,17 +14,12 @@ log = logging.getLogger(__name__)
 
 
 def _call_claude(system: str, user: str, *, use_light_model: bool = False) -> str:
-    """Call Claude via CLI. Returns raw text.
-
-    use_light_model=True uses claude_model_light (Sonnet) for cheaper/faster tasks like validation.
-    """
+    """Call Claude via CLI. Returns raw text."""
     settings = get_settings()
     model = settings.claude_model_light if use_light_model else settings.claude_model
 
-    # Combine system + user into a single prompt for CLI
     prompt = f"{system}\n\n---\n\n{user}"
 
-    # Write prompt to temp file to avoid shell escaping issues with long text
     with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8") as f:
         f.write(prompt)
         prompt_file = f.name
@@ -40,19 +35,16 @@ def _call_claude(system: str, user: str, *, use_light_model: bool = False) -> st
         )
 
         if result.returncode != 0:
-            stderr = result.stderr.strip()
+            stderr = result.stderr.strip() if result.stderr else ""
             stdout_tail = result.stdout.strip()[-200:] if result.stdout else ""
             combined = f"{stderr} {stdout_tail}".lower()
 
-            # 일일 사용 한도 (자정 리셋) — 재시도 무의미
             if "limit" in combined and ("resets" in combined or "daily" in combined):
                 raise NonRetryableError(
                     f"일일 사용 한도 초과 (자정 리셋). STT 캐시 보존됨, 나중에 재실행 가능. stdout: {stdout_tail[:150]}"
                 )
-            # 분 단위 rate limit — 대기 후 재시도 가능
             if "rate" in combined or "limit" in combined or "429" in combined:
                 raise RetryableError(f"Claude CLI rate limit: {stderr}", status_code=429)
-            # Treat transient CLI failures as retryable (e.g. network, overloaded)
             raise RetryableError(
                 f"Claude CLI failed (exit {result.returncode}): stderr={stderr[:300]} stdout_tail={stdout_tail}",
                 status_code=500,
@@ -104,31 +96,39 @@ def _call_claude(system: str, user: str, *, use_light_model: bool = False) -> st
 # ─── Pass 1: STT Correction ───
 
 CORRECTION_PROMPT = """\
-당신은 한국어 음성인식(STT) 후처리 전문가입니다.
-아래 mono 전사본을 읽고, STT 교정 작업을 수행하세요:
+당신은 STT 오타 교정기입니다. 잘못 인식된 단어만 고치고, 나머지는 한 글자도 바꾸지 마세요.
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-【STT 교정】
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-- 동음이의어 오류 (예: "기업" ↔ "기언", "영업" ↔ "연업")
-- 고유명사 오류 (회사명, 인명, 지명, 프로젝트명 등)
-- 문장 경계가 잘못 끊어진 부분
-- 반복된 필러 (어, 음, 그, 아 등)
-- 명백한 받아쓰기 오류
-- 고유명사가 불확실하면 "(추측)" 붙이세요
-- LG U+에는 "본부장", "국장" 직책이 없음. "본부장"→"부사장" 또는 "그룹장", "국장"→"그룹장"으로 교정
+[규칙]
+1. 오타, 잘못 인식된 고유명사만 수정
+2. 문장 구조, 어순, 말투 절대 변경 금지
+3. 요약하거나 의역하지 마세요 — 원문 길이를 유지하세요
+4. 구어체 그대로 유지 ("~거든요", "~잖아요", "~인데" 등)
+5. 반복된 필러(어, 음, 그)만 제거
+6. 화자 태그 추가 금지
+7. 교정된 전사본만 출력 (설명/주석 금지)
+8. LG U+에는 "본부장", "국장" 직책 없음 → "부사장" 또는 "그룹장"으로 교정
+9. **인명 발음 유사 오인식**: 사전의 "핵심인명" 목록에 발음이 비슷한 항목이 있으면 그 표기로 교정 (예: 한국식 인명은 음절 단위로 비교)
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-【출력 형식】
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-- 화자를 구분하지 마세요. 발화자 태그를 추가하지 마세요.
-- 교정된 전사본만 출력하세요 (다른 텍스트 없이)
-- 구어체 특성 유지 (문어체로 바꾸지 말 것)
+[예시]
+입력: 유프러스 기업 에이아이 고객담당에서 캡파 확보를 했구요
+출력: LG유플러스 기업AI고객담당에서 CAPA 확보를 했구요
+
+입력: 디비오 사업이 잘 되고 있거든요 카엠 체계도 만들었고
+출력: DBO 사업이 잘 되고 있거든요 KAM 체계도 만들었고
+
+입력: 파주 아이디씨에서 네이버 클라우드 50메가 하고 있는데
+출력: 파주IDC에서 네이버클라우드 50MW 하고 있는데
+
+입력: 원혁명 부사장 약속 3회 불이행했다고 하더라구요
+출력: 권용현 부사장 약속 3회 불이행했다고 하더라구요
+
+입력: 김태현 대표가 사업 전면 수정 발언을 했어요
+출력: 김태원 대표가 사업 전면 수정 발언을 했어요
 """
 
 
 
-_CHUNK_CHAR_LIMIT = 15000  # ~15K자 초과 시 청크 분할 (약 40분 분량)
+_CHUNK_CHAR_LIMIT = 6000  # ~6K자 초과 시 청크 분할 (약 16분 분량, Claude CLI 타임아웃 방어 강화)
 
 
 def _split_into_chunks(text: str, limit: int = _CHUNK_CHAR_LIMIT) -> list[str]:
@@ -157,7 +157,25 @@ def _split_into_chunks(text: str, limit: int = _CHUNK_CHAR_LIMIT) -> list[str]:
     return chunks
 
 
-def correct_transcript(raw_text: str, dictionary_hints: str = "") -> str:
+def _participants_hint(participants: list[str] | None) -> str:
+    """참석자 힌트 블록 생성. Claude가 추측 대신 이 리스트만 사용하도록 강제."""
+    if not participants:
+        return ""
+    names = ", ".join(str(p) for p in participants if p)
+    if not names:
+        return ""
+    return (
+        f"\n\n[회의 참석자 — 반드시 이 인원으로만 매핑, 추측 금지]\n"
+        f"{names}\n"
+        f"위 리스트에 없는 사람 이름은 전사본에 직접 언급된 경우에만 사용하세요.\n\n"
+    )
+
+
+def correct_transcript(
+    raw_text: str,
+    dictionary_hints: str = "",
+    participants: list[str] | None = None,
+) -> str:
     """Pass 1: Correct STT errors using Claude.
 
     긴 전사본(15K자 초과)은 자동으로 청크 분할하여 처리.
@@ -165,6 +183,7 @@ def correct_transcript(raw_text: str, dictionary_hints: str = "") -> str:
     Args:
         raw_text: Raw mono STT transcript
         dictionary_hints: Proper noun dictionary hints
+        participants: 회의 참석자 리스트 (Claude 교정 시 인명 매핑 힌트)
     """
     if not raw_text.strip():
         return raw_text
@@ -172,6 +191,7 @@ def correct_transcript(raw_text: str, dictionary_hints: str = "") -> str:
     hint_section = ""
     if dictionary_hints:
         hint_section = f"\n\n{dictionary_hints}\n\n"
+    hint_section += _participants_hint(participants)
 
     # 긴 전사본 청크 분할
     chunks = _split_into_chunks(raw_text)
@@ -362,15 +382,30 @@ def _parse_json_response(raw: str, context: str) -> dict:
         ) from e
 
 
-def extract_facts(corrected_text: str, duration: float, recording_date: str = "") -> dict:
-    """Pass 2a: Extract facts only from transcript. No interpretation."""
+def extract_facts(
+    corrected_text: str,
+    duration: float,
+    recording_date: str = "",
+    participants: list[str] | None = None,
+    meeting_title: str | None = None,
+) -> dict:
+    """Pass 2a: Extract facts only from transcript. No interpretation.
+
+    Args:
+        participants: 참석자 리스트 (Claude가 추측 대신 이 리스트로 고정)
+        meeting_title: 회의 제목 (담당 지정 제목, Claude가 임의 생성 금지)
+    """
     if not corrected_text.strip():
         raise SummaryError("Empty transcript — nothing to extract")
 
     date_hint = f"\n녹음 날짜: {recording_date}" if recording_date else ""
+    title_hint = f"\n회의 제목 (담당 지정, 그대로 사용): {meeting_title}" if meeting_title else ""
+    participants_hint = _participants_hint(participants)
+
     user_prompt = (
         f"아래 회의 전사본에서 사실만 추출하여 JSON으로 구조화해주세요.\n"
-        f"회의 길이: {duration / 60:.1f}분{date_hint}\n\n"
+        f"회의 길이: {duration / 60:.1f}분{date_hint}{title_hint}\n"
+        f"{participants_hint}"
         f"전사본:\n{corrected_text}"
     )
 
@@ -474,10 +509,20 @@ def _build_analysis(session_facts: dict, session_enriched: dict, recording_date:
     )
 
 
-def analyze_transcript(corrected_text: str, duration: float, recording_date: str = "") -> list[MeetingAnalysis]:
+def analyze_transcript(
+    corrected_text: str,
+    duration: float,
+    recording_date: str = "",
+    participants: list[str] | None = None,
+    meeting_title: str | None = None,
+) -> list[MeetingAnalysis]:
     """Pass 2 (3-stage): fact extraction → data enrichment → verification.
 
     Returns a list of MeetingAnalysis (multiple if sessions detected in one recording).
+
+    Args:
+        participants: 참석자 리스트 (할루시네이션 방지)
+        meeting_title: 담당 지정 회의 제목
 
     Raises:
         SummaryError: on persistent/parse failure
@@ -485,7 +530,10 @@ def analyze_transcript(corrected_text: str, duration: float, recording_date: str
         NonRetryableError: on auth errors
     """
     # Pass 2a: Extract facts
-    facts_data = extract_facts(corrected_text, duration, recording_date)
+    facts_data = extract_facts(
+        corrected_text, duration, recording_date,
+        participants=participants, meeting_title=meeting_title,
+    )
 
     # Check if multi-session format
     sessions = facts_data.get("sessions", [])
@@ -508,17 +556,26 @@ def analyze_transcript(corrected_text: str, duration: float, recording_date: str
 
 
 def summarize_transcript(full_text: str, duration: float, recording_date: str = "",
-                         dictionary_hints: str = "") -> list[MeetingAnalysis]:
+                         dictionary_hints: str = "",
+                         participants: list[str] | None = None,
+                         meeting_title: str | None = None) -> list[MeetingAnalysis]:
     """Full pipeline: correct → validate → extract facts → analyze → verify.
 
     This is the main entry point called by pipeline.py.
     Returns a list of MeetingAnalysis (1 or more if multi-session detected).
+
+    Args:
+        participants: 담당 지정 참석자 리스트 (할루시네이션 방지)
+        meeting_title: 담당 지정 회의 제목
     """
-    # Pass 1: STT correction with proper noun hints
-    corrected = correct_transcript(full_text, dictionary_hints)
+    # Pass 1: STT correction with proper noun hints + participants
+    corrected = correct_transcript(full_text, dictionary_hints, participants=participants)
 
     # Pass 1.5: Disabled (always passes through)
     validated = validate_correction(full_text, corrected)
 
     # Pass 2 (3-stage): fact extraction → data enrichment → verification
-    return analyze_transcript(validated, duration, recording_date)
+    return analyze_transcript(
+        validated, duration, recording_date,
+        participants=participants, meeting_title=meeting_title,
+    )

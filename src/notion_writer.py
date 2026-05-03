@@ -466,31 +466,40 @@ def _build_db_properties(analysis: MeetingAnalysis) -> dict:
         if isinstance(tags, str):
             tags = [t.strip() for t in tags.split(",") if t.strip()]
         # 각 태그가 문자열인지 확인
-        tag_list = [{"name": str(t)[:100]} for t in tags if t]
+        tag_list = [{"name": str(t).replace(",", "·")[:100]} for t in tags if t]
         if tag_list:
             db_props["태그"] = {"multi_select": tag_list}
 
-    # Second Brain metadata (Multi-select)
+    # Second Brain metadata (Multi-select) — DB에 속성이 없으면 Notion API가 에러를 반환하므로
+    # _optional_props에 모아두고 create 시 에러나면 제거 후 재시도
+    _optional_props: dict = {}
     if hasattr(props, 'knowledge_types') and props.knowledge_types:
         kt_list = props.knowledge_types
         if isinstance(kt_list, str):
             kt_list = [k.strip() for k in kt_list.split(",") if k.strip()]
         kt_options = [{"name": str(k).replace(",", "·")[:100]} for k in kt_list if k]
         if kt_options:
-            db_props["지식유형"] = {"multi_select": kt_options}
+            _optional_props["지식유형"] = {"multi_select": kt_options}
     if hasattr(props, 'entities') and props.entities:
         ent_list = props.entities
         if isinstance(ent_list, str):
             ent_list = [e.strip() for e in ent_list.split(",") if e.strip()]
         ent_options = [{"name": str(e).replace(",", "·")[:100]} for e in ent_list if e]
         if ent_options:
-            db_props["엔티티"] = {"multi_select": ent_options}
+            _optional_props["엔티티"] = {"multi_select": ent_options}
+    # optional props는 일단 포함하되, create_meeting_note에서 에러 시 제거 후 재시도
+    db_props.update(_optional_props)
 
-    # Rich text properties
+    # Rich text properties — LLM이 list를 반환할 수 있으므로 str 강제 변환
+    def _to_str(v: str | list) -> str:
+        if isinstance(v, list):
+            return ", ".join(str(x) for x in v)
+        return str(v)
+
     if props.summary:
-        db_props["요약"] = {"rich_text": [{"text": {"content": props.summary[:2000]}}]}
+        db_props["요약"] = {"rich_text": [{"text": {"content": _to_str(props.summary)[:2000]}}]}
     if props.next_actions:
-        db_props["다음액션"] = {"rich_text": [{"text": {"content": props.next_actions[:2000]}}]}
+        db_props["다음액션"] = {"rich_text": [{"text": {"content": _to_str(props.next_actions)[:2000]}}]}
     if props.participants:
         p = props.participants
         if isinstance(p, list):
@@ -534,12 +543,26 @@ def create_meeting_note(
         first_batch = children[:100]
         remaining = children[100:]
 
-        # Create page in 개인기록_DB
-        page = client.pages.create(
-            parent={"database_id": settings.notion_database_id},
-            properties=db_properties,
-            children=first_batch,
-        )
+        # Create page in 개인기록_DB — 존재하지 않는 속성은 제거 후 재시도
+        try:
+            page = client.pages.create(
+                parent={"database_id": settings.notion_database_id},
+                properties=db_properties,
+                children=first_batch,
+            )
+        except APIResponseError as e:
+            if "is not a property that exists" in str(e):
+                # 존재하지 않는 속성 제거 후 재시도
+                for bad_key in ["지식유형", "엔티티"]:
+                    db_properties.pop(bad_key, None)
+                log.warning(f"Notion DB 속성 누락 — 지식유형/엔티티 제외 후 재시도")
+                page = client.pages.create(
+                    parent={"database_id": settings.notion_database_id},
+                    properties=db_properties,
+                    children=first_batch,
+                )
+            else:
+                raise
 
         # Append remaining blocks in batches of 100
         page_id = page["id"]

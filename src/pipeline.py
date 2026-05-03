@@ -537,8 +537,17 @@ def process_date(target_date: str, skip_indices: list[int] | None = None) -> lis
     return page_ids
 
 
-def _process_single_for_merge(audio_path: str) -> list[tuple] | None:
-    """단일 파일 STT + Claude 분석. Notion 저장 없이 (analysis, transcript_text) 리스트 반환."""
+def _process_single_for_merge(
+    audio_path: str,
+    participants: list[str] | None = None,
+    meeting_title: str | None = None,
+) -> list[tuple] | None:
+    """단일 파일 STT + Claude 분석. Notion 저장 없이 (analysis, transcript_text) 리스트 반환.
+
+    Args:
+        participants: 담당 지정 참석자 (할루시네이션 방지)
+        meeting_title: 담당 지정 회의 제목
+    """
     filename = Path(audio_path).name
 
     if not filename.endswith(".m4a"):
@@ -574,12 +583,13 @@ def _process_single_for_merge(audio_path: str) -> list[tuple] | None:
             log.info(f"의미 있는 내용 부족 (한글 {korean_chars}자 < 30자), 스킵: {filename}")
             return None
 
-        # Claude analysis
+        # Claude analysis (참석자/제목 힌트 주입)
         log.info(f"[Claude] {filename}")
         hints = _get_dictionary(transcript.full_text)
         analyses = _retry_with_backoff(
             summarize_transcript, transcript.full_text, transcript.duration,
-            recording_date, hints
+            recording_date, hints,
+            participants, meeting_title,
         )
 
         return [(a, transcript.full_text) for a in analyses]
@@ -590,3 +600,97 @@ def _process_single_for_merge(audio_path: str) -> list[tuple] | None:
     finally:
         tmp_dir = os.path.dirname(tmp_path)
         shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def process_date_with_meta(
+    target_date: str,
+    meta_map: dict[str, dict],
+) -> list[str]:
+    """특정 날짜 음성메모를 **파일별 메타 정보 주입**하며 처리.
+
+    meta_map 형식:
+    {
+        "20260423 092615-8CC8126F.m4a": {
+            "title": "그룹주간회의 (안형균 그룹장 주재)",  # optional
+            "participants": ["이성우 담당", "안형균 그룹장", ...],  # optional
+            "skip": False,  # optional, True면 해당 파일 처리 안 함
+        },
+        ...
+    }
+
+    meta_map에 없는 파일은 메타 없이 처리.
+    """
+    settings = get_settings()
+    watch_dir = Path(settings.watch_dir)
+
+    files = sorted(watch_dir.glob(f"{target_date}*.m4a"))
+    if not files:
+        log.info(f"[{target_date}] 파일 없음")
+        return []
+
+    active_files = [
+        f for f in files
+        if not meta_map.get(f.name, {}).get("skip", False)
+    ]
+
+    if not active_files:
+        log.info(f"[{target_date}] 스킵 후 처리할 파일 없음")
+        return []
+
+    log.info(
+        f"[{target_date}] {len(active_files)}개 파일 처리 시작 "
+        f"(전체 {len(files)}개, 스킵 {len(files) - len(active_files)}개, 파일별 즉시 저장 모드)"
+    )
+
+    page_ids: list[str] = []
+    for idx, f in enumerate(active_files, 1):
+        if is_processed(str(f)):
+            log.info(f"[{idx}/{len(active_files)}] 이미 처리됨, 스킵: {f.name}")
+            continue
+
+        meta = meta_map.get(f.name, {})
+        participants = meta.get("participants")
+        title = meta.get("title")
+
+        log.info(
+            f"[{idx}/{len(active_files)}] [{f.name}] 메타 — 제목={title or '(없음)'}, "
+            f"참석자={len(participants) if participants else 0}명"
+        )
+
+        # STT + Claude 분석
+        try:
+            result = _process_single_for_merge(
+                str(f),
+                participants=participants,
+                meeting_title=title,
+            )
+        except Exception as e:
+            log.error(f"[{f.name}] 분석 실패: {e}")
+            continue
+
+        if not result:
+            continue
+
+        # 파일별 즉시 Notion 저장 (병합 없이 개별 저장)
+        file_page_ids: list[str] = []
+        for analysis, _ in result:
+            try:
+                page_id = _retry_with_backoff(
+                    create_meeting_note, analysis, None, f"{target_date}_{f.stem}"
+                )
+                file_page_ids.append(str(page_id))
+                log.info(
+                    f"[{idx}/{len(active_files)}] Notion 페이지 생성: "
+                    f"{analysis.properties.title} → {page_id}"
+                )
+            except Exception as e:
+                log.error(f"[{f.name}] Notion 생성 실패: {analysis.properties.title}: {e}")
+
+        page_ids.extend(file_page_ids)
+
+        # 이 파일 완료 시점에 processed 마킹 (다음 파일 문제 시에도 이 파일은 재처리 안 됨)
+        if file_page_ids and not is_processed(str(f)):
+            mark_processed(str(f))
+
+    log.info(f"[{target_date}] 완료: {len(page_ids)}개 페이지 생성")
+    return page_ids

@@ -115,7 +115,8 @@ class TestCorrectTranscript:
         mock_call_claude.return_value = "결과"
         correct_transcript("테스트 입력")
         call_args = mock_call_claude.call_args
-        assert "음성인식" in call_args[1]["system"] or "음성인식" in call_args[0][0]
+        prompt_text = call_args[1].get("system", "") or call_args[0][0]
+        assert "STT" in prompt_text or "교정" in prompt_text
 
 
 class TestAnalyzeTranscript:

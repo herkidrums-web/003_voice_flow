@@ -36,26 +36,30 @@ def mock_settings():
 
 class TestIsProcessed:
     def test_false_when_no_log(self, tmp_path):
-        with patch("src.pipeline._get_processed_log_path", return_value=tmp_path / "processed.log"):
+        with patch("src.pipeline._get_processed_log_path", return_value=tmp_path / "processed.log"), \
+             patch("src.pipeline._get_state_path", return_value=tmp_path / "state.jsonl"):
             assert is_processed(str(tmp_path / "test.m4a")) is False
 
     def test_true_when_in_log(self, tmp_path):
         log_file = tmp_path / "processed.log"
         log_file.write_text("test.m4a\n")
-        with patch("src.pipeline._get_processed_log_path", return_value=log_file):
+        with patch("src.pipeline._get_processed_log_path", return_value=log_file), \
+             patch("src.pipeline._get_state_path", return_value=tmp_path / "state.jsonl"):
             assert is_processed(str(tmp_path / "test.m4a")) is True
 
     def test_false_for_different_file(self, tmp_path):
         log_file = tmp_path / "processed.log"
         log_file.write_text("other.m4a\n")
-        with patch("src.pipeline._get_processed_log_path", return_value=log_file):
+        with patch("src.pipeline._get_processed_log_path", return_value=log_file), \
+             patch("src.pipeline._get_state_path", return_value=tmp_path / "state.jsonl"):
             assert is_processed(str(tmp_path / "test.m4a")) is False
 
 
 class TestMarkProcessed:
     def test_appends_filename(self, tmp_path):
         log_file = tmp_path / "processed.log"
-        with patch("src.pipeline._get_processed_log_path", return_value=log_file):
+        with patch("src.pipeline._get_processed_log_path", return_value=log_file), \
+             patch("src.pipeline._get_state_path", return_value=tmp_path / "state.jsonl"):
             mark_processed(str(tmp_path / "test.m4a"))
             content = log_file.read_text()
             assert "test.m4a" in content

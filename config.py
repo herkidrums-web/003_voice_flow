@@ -18,10 +18,12 @@ class Settings(BaseSettings):
     hf_token: str
 
     # Anthropic
-    anthropic_api_key: str
-    claude_model: str = "claude-sonnet-4-5-20250929"
+    anthropic_api_key: str = ""
+    claude_cli_path: str = "/Users/swlee/.local/bin/claude"
+    claude_model: str = "claude-sonnet-4-6"
+    claude_model_light: str = "claude-sonnet-4-6"
     claude_max_tokens: int = 64000
-    claude_api_timeout: float = 1800.0
+    claude_api_timeout: float = 3600.0
 
     # Notion
     notion_api_key: str
@@ -29,11 +31,8 @@ class Settings(BaseSettings):
     notion_database_id: str = ""  # 개인기록_DB (for page creation)
     notion_data_source_id: str = ""  # 개인기록_DB (for schema/query)
 
-    # Watch directory
-    watch_dir: str = str(
-        Path.home()
-        / "Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings"
-    )
+    # Watch directory — recordings_mirror/ to avoid macOS FDA dependency
+    watch_dir: str = str(_PROJECT_ROOT / "recordings_mirror")
 
     # File stability
     file_stability_interval: float = 2.0
@@ -49,6 +48,15 @@ class Settings(BaseSettings):
     grouping_daytime_gap: float = 300.0  # 5분 (초) — 낮 파일 간격 기준
     grouping_evening_start_hour: int = 17  # 저녁 기준 시각
     grouping_debounce: float = 60.0  # 와처 디바운스 대기 (초)
+
+    # Minimum recording duration (seconds) — skip shorter recordings
+    min_duration: float = 5.0
+
+    # STT cache — SHA256 기반 파일 캐시로 재실행 시 STT 스킵
+    stt_cache_dir: str = str(_PROJECT_ROOT / ".stt_cache")
+
+    # pyannote diarization — torchcodec 문제 시 비활성화 가능
+    enable_diarization: bool = False
 
     # State
     processed_log: str = "processed.log"
