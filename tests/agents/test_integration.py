@@ -133,6 +133,51 @@ def test_state_is_too_long_returns_false_for_normal_file(tmp_path):
     assert state.is_too_long("normal.m4a") is False
 
 
+def test_list_pending_skips_done_stage_files(tmp_path):
+    """Files with Stage.DONE (from v2 state) are excluded from pending."""
+    from scripts.run_orchestrator import _list_pending
+    from src.agents.state import OrchestratorState, Stage
+
+    watch_dir = tmp_path / "watch"
+    watch_dir.mkdir()
+    done_file = watch_dir / "20260101 120000-DONE.m4a"
+    done_file.write_bytes(b"fake")
+    fresh_file = watch_dir / "20260101 130000-FRESH.m4a"
+    fresh_file.write_bytes(b"fake")
+
+    state = OrchestratorState(tmp_path / "state.jsonl")
+    state.record("20260101 120000-DONE.m4a", Stage.DONE, status="done")
+
+    result = _list_pending(watch_dir, state)
+
+    assert done_file not in result
+    assert fresh_file in result
+
+
+def test_list_pending_skips_too_short_file(tmp_path):
+    """Files shorter than min_duration_seconds are silently skipped."""
+    from scripts.run_orchestrator import _list_pending
+    from src.agents.state import OrchestratorState
+
+    watch_dir = tmp_path / "watch"
+    watch_dir.mkdir()
+    short_file = watch_dir / "20260317 182640-SHORT.m4a"
+    short_file.write_bytes(b"fake")
+    normal_file = watch_dir / "20260317 190000-NORMAL.m4a"
+    normal_file.write_bytes(b"fake")
+
+    state = OrchestratorState(tmp_path / "state.jsonl")
+
+    def fake_ffprobe(path):
+        return 0.001 if "SHORT" in str(path) else 5.0  # 0.06s vs 300s
+
+    with patch("scripts.run_orchestrator._get_duration_minutes", side_effect=fake_ffprobe):
+        result = _list_pending(watch_dir, state, min_duration_seconds=5.0)
+
+    assert short_file not in result
+    assert normal_file in result
+
+
 def test_list_pending_zero_max_duration_disables_guard(tmp_path):
     """Setting max_duration_minutes=0 disables the guard entirely."""
     from scripts.run_orchestrator import _list_pending
@@ -146,7 +191,7 @@ def test_list_pending_zero_max_duration_disables_guard(tmp_path):
     state = OrchestratorState(tmp_path / "state.jsonl")
 
     with patch("scripts.run_orchestrator._get_duration_minutes", return_value=600.0):
-        result = _list_pending(watch_dir, state, max_duration_minutes=0.0)
+        result = _list_pending(watch_dir, state, max_duration_minutes=0.0, min_duration_seconds=0.0)
 
     # Guard disabled — big file is included
     assert big_file in result
