@@ -44,6 +44,7 @@ class Settings(BaseSettings):
     notion_parent_page_id: str
     notion_database_id: str = ""  # 개인기록_DB (for page creation)
     notion_data_source_id: str = ""  # 개인기록_DB (for schema/query)
+    notion_briefing_database_id: str = ""  # 일일 브리핑 DB (사용자가 .env에 주입)
 
     # Watch directory — recordings_mirror/ to avoid macOS FDA dependency
     watch_dir: str = str(_PROJECT_ROOT / "recordings_mirror")

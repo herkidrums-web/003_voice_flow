@@ -22,3 +22,10 @@ def test_v3_grouping_max_chars():
 def test_v3_wiki_index_path():
     s = get_settings()
     assert s.wiki_index_path.endswith("000_second_brain/wiki/index.md")
+
+
+def test_v3_notion_briefing_database_id_defaults_empty():
+    """일일 브리핑 DB ID. 사용자가 .env에 NOTION_BRIEFING_DATABASE_ID로 주입."""
+    s = get_settings()
+    assert hasattr(s, "notion_briefing_database_id")
+    assert isinstance(s.notion_briefing_database_id, str)
