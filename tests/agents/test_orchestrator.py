@@ -91,7 +91,8 @@ def test_resume_from_persisted_stage(state, tmp_path):
 
     orch = _make_orchestrator(state)
     orch.process_batch([audio])
-    orch.agents["stt"].execute.assert_not_called()
+    # STT is called once on resume to load transcript from cache (fast, <0.1s)
+    orch.agents["stt"].execute.assert_called_once()
     orch.agents["ner"].execute.assert_not_called()
     orch.agents["dictionary"].execute.assert_not_called()
     orch.agents["grouping"].execute.assert_called()

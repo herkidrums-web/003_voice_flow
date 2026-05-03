@@ -16,6 +16,11 @@ import sys
 import time
 from pathlib import Path
 
+# Ensure project root is on sys.path so launchd (no PYTHONPATH) can import config/src
+_PROJ_ROOT = Path(__file__).resolve().parents[1]
+if str(_PROJ_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJ_ROOT))
+
 from anthropic import Anthropic
 
 from config import get_settings
@@ -49,6 +54,20 @@ def _check_sync_health(sync_log: Path, max_age_hours: int = 24) -> tuple[bool, s
     if age_hours > max_age_hours:
         return False, f"sync.log stale ({age_hours:.1f}h since last update; threshold {max_age_hours}h)"
     return True, f"sync.log fresh ({age_hours:.1f}h)"
+
+
+def _check_orchestrator_health(heartbeat: Path, max_age_hours: int = 25) -> tuple[bool, str]:
+    """Check orchestrator.heartbeat freshness for external monitoring.
+
+    Returns (ok, message). Called by briefing agent or monitoring scripts.
+    max_age_hours=25 allows one missed hourly run before alerting.
+    """
+    if not heartbeat.exists():
+        return False, f"orchestrator.heartbeat not found — has it ever run? ({heartbeat})"
+    age_hours = (time.time() - heartbeat.stat().st_mtime) / 3600
+    if age_hours > max_age_hours:
+        return False, f"orchestrator stale ({age_hours:.1f}h since last run; threshold {max_age_hours}h)"
+    return True, f"orchestrator alive ({age_hours:.1f}h ago)"
 
 
 def _notify(title: str, message: str) -> None:
@@ -175,6 +194,14 @@ def main() -> int:
     log.info("processing %d files", len(pending))
     result = orchestrator.process_batch(pending)
     log.info("batch result: %s", result)
+
+    # Heartbeat: write timestamp so monitoring tools can detect a dead orchestrator
+    heartbeat = project_root / "orchestrator.heartbeat"
+    heartbeat.write_text(
+        f"{time.strftime('%Y-%m-%d %H:%M:%S')} ok={result.get('ok')} files={len(pending)}\n",
+        encoding="utf-8",
+    )
+
     if not result.get("ok"):
         _notify("VoiceFlow", f"배치 일부 실패 — {result.get('reason', 'see log')}")
     return 0 if result.get("ok") else 2

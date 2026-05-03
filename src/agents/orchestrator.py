@@ -37,8 +37,9 @@ class Orchestrator:
 
     def _stt_phase(self, audio: Path) -> dict | None:
         if self._already_done(audio.name, Stage.STT):
-            # Resume: return placeholder so subsequent phases can proceed
-            return {"transcript": "", "cache_hit": True, "sha256": ""}
+            # Resume: re-run STTAgent so it loads transcript from cache (fast, < 0.1s)
+            r = self.agents["stt"].execute({"audio_path": str(audio)})
+            return r.data if r.ok else {"transcript": "", "cache_hit": True, "sha256": ""}
         r = self.agents["stt"].execute({"audio_path": str(audio)})
         if not r.ok:
             self._record_fail(audio.name, Stage.STT, r.error)
