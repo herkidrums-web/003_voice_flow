@@ -76,3 +76,26 @@ def _extract_text(block):
     inner = block.get(btype, {})
     rich_text = inner.get("rich_text", [])
     return "".join(rt.get("text", {}).get("content", "") for rt in rich_text)
+
+
+def test_create_meeting_note_accepts_properties_kwarg():
+    """v3 multi-agent: NotionAgent passes `properties` dict — must not crash."""
+    from unittest.mock import patch
+
+    from src.notion_writer import create_meeting_note
+
+    with patch("src.notion_writer.Client") as MockClient:
+        client = MockClient.return_value
+        client.pages.create.return_value = {"id": "p1", "url": "https://www.notion.so/p1"}
+        result = create_meeting_note(
+            database_id="db",
+            api_key="x",
+            title="T",
+            date="2026-05-03",
+            transcript="",
+            analyses=[],
+            properties={"project": ["네이버"], "meeting_type": "내부회의", "importance": "high"},
+        )
+        assert result["id"] == "p1"
+        assert result["url"] == "https://www.notion.so/p1"
+        client.pages.create.assert_called_once()

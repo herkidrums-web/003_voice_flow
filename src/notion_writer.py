@@ -514,20 +514,55 @@ def _build_db_properties(analysis: MeetingAnalysis) -> dict:
 
 
 def create_meeting_note(
-    analysis: MeetingAnalysis,
-    transcript: TranscriptResult | None,
-    audio_filename: str,
-) -> str:
-    """Create a Notion page in 개인기록_DB with the meeting note.
+    analysis: MeetingAnalysis | None = None,
+    transcript: TranscriptResult | None = None,
+    audio_filename: str = "",
+    *,
+    # v3 multi-agent interface (keyword-only overload)
+    database_id: str | None = None,
+    api_key: str | None = None,
+    title: str | None = None,
+    date: str | None = None,
+    analyses: list[dict] | None = None,
+    properties: dict | None = None,
+) -> str | dict:
+    """Create a Notion page with a meeting note.
 
-    Returns:
-        page_id of the created page
+    Supports two calling conventions:
+
+    **Legacy (pipeline)**::
+
+        create_meeting_note(analysis, transcript, audio_filename) -> page_id (str)
+
+    **v3 multi-agent**::
+
+        create_meeting_note(
+            database_id=..., api_key=..., title=..., date=...,
+            transcript=..., analyses=..., properties=...
+        ) -> {"id": ..., "url": ...}
 
     Raises:
-        NotionWriteError: on persistent failure
-        RetryableError: on transient API errors
-        NonRetryableError: on auth errors
+        NotionWriteError: on persistent failure (legacy path)
+        RetryableError: on transient API errors (legacy path)
+        NonRetryableError: on auth errors (legacy path)
+        RuntimeError: on API failure (v3 path)
     """
+    # v3 multi-agent path: any v3-specific kwarg present → delegate
+    if database_id is not None or api_key is not None or title is not None:
+        return create_meeting_note_v3(
+            database_id=database_id or "",
+            api_key=api_key or "",
+            title=title or "",
+            date=date or "",
+            transcript=transcript if isinstance(transcript, str) else "",
+            analyses=analyses or [],
+            properties=properties,
+        )
+
+    # Legacy path — original positional args required
+    if analysis is None:
+        raise ValueError("analysis is required for the legacy create_meeting_note call")
+
     settings = get_settings()
     client = _get_client()
 

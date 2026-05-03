@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.swlee.voiceflow-orchestrator</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/swlee/Documents/Coding/002_voice_flow/poc/.venv/bin/python</string>
+        <string>/Users/swlee/Documents/Coding/002_voice_flow/scripts/run_orchestrator.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/swlee/Documents/Coding/002_voice_flow</string>
+
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict><key>Minute</key><integer>5</integer></dict>
+    </array>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/voiceflow-orchestrator.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/tmp/voiceflow-orchestrator.err.log</string>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>KeepAlive</key>
+    <false/>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>
