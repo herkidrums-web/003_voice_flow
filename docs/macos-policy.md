@@ -6,6 +6,7 @@
 |------|----------|--------|------|
 | `com.swlee.voiceflow-sync` | bash (FDA 보유) | WatchPaths | Voice Memos → `recordings_mirror/` 복사 |
 | `com.swlee.voiceflow-orchestrator` | python venv (FDA 불필요) | hourly (:05) | `recordings_mirror/` → STT → 분석 → Notion → Wiki |
+| `com.swlee.voiceflow-briefing` | python venv | 평일 08:00 | 전날 미팅 + 오늘 To-Do → Notion 일일 브리핑 DB |
 
 **핵심 원칙**: Python은 `~/Library/Group Containers/group.com.apple.VoiceMemos.shared/` 를 절대 직접 읽지 않는다. brew upgrade로 Python Cellar 경로가 바뀌어도 FDA 권한이 깨지지 않는 이유.
 
