@@ -71,6 +71,13 @@ class OrchestratorState:
                 latest = Stage(stage)
         return latest
 
+    def is_too_long(self, file: str) -> bool:
+        """True if this file was previously flagged as exceeding max_duration."""
+        return any(
+            rec.get("status") == "too_long"
+            for rec in self._records_for(file)
+        )
+
     def list_files_at_stage(self, stage: Stage) -> list[str]:
         if not self.path.exists():
             return []

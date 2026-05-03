@@ -79,11 +79,56 @@ def _build_agents(settings) -> dict:
     }
 
 
-def _list_pending(watch_dir: Path, state: OrchestratorState) -> list[Path]:
+def _get_duration_minutes(path: Path) -> float | None:
+    """Return file duration in minutes via ffprobe. Returns None if ffprobe unavailable or fails."""
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe", "-v", "quiet",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                str(path),
+            ],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return float(result.stdout.strip()) / 60
+    except Exception:
+        pass
+    return None
+
+
+def _list_pending(
+    watch_dir: Path,
+    state: OrchestratorState,
+    max_duration_minutes: float = 0.0,
+) -> list[Path]:
     pending: list[Path] = []
     for path in sorted(watch_dir.glob("*.m4a")):
-        if state.get_stage(path.name) != Stage.WIKI:
-            pending.append(path)
+        if state.get_stage(path.name) == Stage.WIKI:
+            continue
+
+        # Skip files already flagged as too long (suppress repeated notifications)
+        if state.is_too_long(path.name):
+            log.debug("skipping previously flagged too-long file: %s", path.name)
+            continue
+
+        # Guard: reject accidental multi-hour recordings
+        if max_duration_minutes > 0:
+            dur = _get_duration_minutes(path)
+            if dur is not None and dur > max_duration_minutes:
+                log.warning(
+                    "⏭ 파일 스킵 (%.0f분 > 한도 %.0f분): %s",
+                    dur, max_duration_minutes, path.name,
+                )
+                state.record(path.name, Stage.NONE, status="too_long", meta={"duration_minutes": round(dur, 1)})
+                _notify(
+                    "VoiceFlow — 장시간 녹음 감지",
+                    f"{path.name}: {dur:.0f}분 녹음 (한도 {max_duration_minutes:.0f}분). 필요 없으면 파일 삭제해 주세요.",
+                )
+                continue
+
+        pending.append(path)
     return pending
 
 
@@ -110,7 +155,7 @@ def main() -> int:
         _notify("VoiceFlow", f"watch_dir 없음: {watch_dir}")
         return 1
 
-    pending = _list_pending(watch_dir, state)
+    pending = _list_pending(watch_dir, state, max_duration_minutes=settings.max_duration_minutes)
     if not pending:
         log.info("no pending files")
         return 0
