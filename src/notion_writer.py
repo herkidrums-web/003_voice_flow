@@ -582,3 +582,80 @@ def create_meeting_note(
     page_id = page["id"]
     log.info(f"Notion 페이지 생성 완료: {page_id}")
     return page_id
+
+
+# ---------------------------------------------------------------------------
+# v3 multi-agent interface
+# ---------------------------------------------------------------------------
+
+def create_meeting_note_v3(
+    *,
+    database_id: str,
+    api_key: str,
+    title: str,
+    date: str,
+    transcript: str,
+    analyses: list[dict],
+    properties: dict | None = None,
+) -> dict[str, str]:
+    """Create a Notion page via the v3 multi-agent pipeline.
+
+    Args:
+        database_id: Target Notion database ID.
+        api_key: Notion integration token.
+        title: Page title.
+        date: ISO date string (YYYY-MM-DD).
+        transcript: Full transcript text.
+        analyses: List of analysis dicts (topics with five_w_one_h etc.).
+        properties: Optional extra page properties (project, meeting_type, importance).
+
+    Returns:
+        dict with ``id`` and ``url`` of the created page.
+
+    Raises:
+        RuntimeError: on any API failure (wraps underlying exception).
+    """
+    client = Client(auth=api_key)
+
+    props: dict = {"제목": {"title": [{"text": {"content": title}}]}}
+    if date:
+        props["날짜"] = {"date": {"start": date}}
+
+    extra = properties or {}
+    if extra.get("meeting_type"):
+        props["미팅유형"] = {"select": {"name": extra["meeting_type"]}}
+    if extra.get("importance"):
+        props["중요도"] = {"select": {"name": extra["importance"]}}
+    if extra.get("project"):
+        project_list = extra["project"] if isinstance(extra["project"], list) else [extra["project"]]
+        props["프로젝트"] = {"multi_select": [{"name": p} for p in project_list]}
+
+    children: list[dict] = []
+    if transcript:
+        children.append({
+            "object": "block",
+            "type": "paragraph",
+            "paragraph": {"rich_text": [{"type": "text", "text": {"content": transcript[:2000]}}]},
+        })
+    for item in (analyses or []):
+        topic = item.get("topic", "")
+        if topic:
+            children.append({
+                "object": "block",
+                "type": "heading_2",
+                "heading_2": {"rich_text": [{"type": "text", "text": {"content": topic}}]},
+            })
+
+    try:
+        page = client.pages.create(
+            parent={"database_id": database_id},
+            properties=props,
+            children=children[:100],
+        )
+    except Exception as exc:
+        raise RuntimeError(str(exc)) from exc
+
+    page_id = page["id"]
+    page_url = page.get("url", f"https://www.notion.so/{page_id.replace('-', '')}")
+    log.info("v3 Notion 페이지 생성 완료: %s", page_id)
+    return {"id": page_id, "url": page_url}
