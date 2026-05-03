@@ -69,8 +69,8 @@ class Settings(BaseSettings):
 
     # Maximum recording duration (minutes) — skip accidental long recordings
     # Recordings longer than this are skipped with a macOS notification.
-    # Set to 0 to disable the guard. Default: 120 minutes (2 hours).
-    max_duration_minutes: float = 120.0
+    # Set to 0 to disable the guard. Default: 180 minutes (3 hours).
+    max_duration_minutes: float = 180.0
 
     # STT cache — SHA256 기반 파일 캐시로 재실행 시 STT 스킵
     stt_cache_dir: str = str(_PROJECT_ROOT / ".stt_cache")
