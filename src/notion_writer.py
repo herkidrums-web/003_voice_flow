@@ -1,4 +1,4 @@
-"""Notion 개인기록_DB page creator with rich block structure."""
+"""Notion 2026 기업AI고객담당_DB page creator with rich block structure."""
 from __future__ import annotations
 
 import logging
@@ -430,10 +430,12 @@ def _append_raw_transcript(blocks: list[dict], transcript_text: str) -> None:
 # --- DB properties builder ---
 
 def _build_db_properties(analysis: MeetingAnalysis) -> dict:
-    """Build Notion database properties for 개인기록_DB."""
+    """Build Notion database properties for 2026 기업AI고객담당_DB."""
     props = analysis.properties
     db_props: dict = {
-        "회의 이름": {"title": [{"text": {"content": props.title}}]},
+        "Name": {"title": [{"text": {"content": props.title}}]},
+        "입력방식": {"select": {"name": "자동전사"}},
+        "Tags": {"multi_select": [{"name": "Meeting"}]},
     }
 
     # Select properties (only set if non-empty)
@@ -444,13 +446,19 @@ def _build_db_properties(analysis: MeetingAnalysis) -> dict:
     if props.meeting_type:
         db_props["유형"] = {"select": {"name": _safe_select(props.meeting_type)}}
     if props.priority:
-        db_props["우선순위"] = {"select": {"name": _safe_select(props.priority)}}
+        # 우선순위 → 중요도 매핑
+        _priority_map = {"높음": "🔴긴급", "중간": "🟡중요", "낮음": "⚪일반",
+                         "high": "🔴긴급", "medium": "🟡중요", "low": "⚪일반"}
+        mapped = _priority_map.get(props.priority.strip(), _safe_select(props.priority))
+        db_props["중요도"] = {"select": {"name": mapped}}
     if props.status:
-        db_props["상태"] = {"select": {"name": _safe_select(props.status)}}
+        # 상태는 STATUS 타입 — select가 아닌 status 키 사용
+        db_props["상태"] = {"status": {"name": _safe_select(props.status)}}
     if props.project:
         db_props["프로젝트"] = {"select": {"name": _safe_select(props.project)}}
     if props.client:
-        db_props["고객명"] = {"select": {"name": _safe_select(props.client)}}
+        # 고객명은 RICH_TEXT (RELATION 매핑 불가)
+        db_props["고객명"] = {"rich_text": [{"text": {"content": _safe_select(props.client)[:200]}}]}
 
     # Multi-select properties
     if props.related_people:
@@ -462,33 +470,11 @@ def _build_db_properties(analysis: MeetingAnalysis) -> dict:
             db_props["관련인물"] = {"multi_select": people_list}
     if props.tags:
         tags = props.tags
-        # 문자열로 온 경우 배열로 변환
         if isinstance(tags, str):
             tags = [t.strip() for t in tags.split(",") if t.strip()]
-        # 각 태그가 문자열인지 확인
         tag_list = [{"name": str(t).replace(",", "·")[:100]} for t in tags if t]
         if tag_list:
             db_props["태그"] = {"multi_select": tag_list}
-
-    # Second Brain metadata (Multi-select) — DB에 속성이 없으면 Notion API가 에러를 반환하므로
-    # _optional_props에 모아두고 create 시 에러나면 제거 후 재시도
-    _optional_props: dict = {}
-    if hasattr(props, 'knowledge_types') and props.knowledge_types:
-        kt_list = props.knowledge_types
-        if isinstance(kt_list, str):
-            kt_list = [k.strip() for k in kt_list.split(",") if k.strip()]
-        kt_options = [{"name": str(k).replace(",", "·")[:100]} for k in kt_list if k]
-        if kt_options:
-            _optional_props["지식유형"] = {"multi_select": kt_options}
-    if hasattr(props, 'entities') and props.entities:
-        ent_list = props.entities
-        if isinstance(ent_list, str):
-            ent_list = [e.strip() for e in ent_list.split(",") if e.strip()]
-        ent_options = [{"name": str(e).replace(",", "·")[:100]} for e in ent_list if e]
-        if ent_options:
-            _optional_props["엔티티"] = {"multi_select": ent_options}
-    # optional props는 일단 포함하되, create_meeting_note에서 에러 시 제거 후 재시도
-    db_props.update(_optional_props)
 
     # Rich text properties — LLM이 list를 반환할 수 있으므로 str 강제 변환
     def _to_str(v: str | list) -> str:
@@ -504,7 +490,7 @@ def _build_db_properties(analysis: MeetingAnalysis) -> dict:
         p = props.participants
         if isinstance(p, list):
             p = ", ".join(str(x) for x in p)
-        db_props["참석자 1"] = {"rich_text": [{"text": {"content": str(p)[:2000]}}]}
+        db_props["참석자1"] = {"rich_text": [{"text": {"content": str(p)[:2000]}}]}
 
     # Date property
     if props.date:
@@ -578,26 +564,12 @@ def create_meeting_note(
         first_batch = children[:100]
         remaining = children[100:]
 
-        # Create page in 개인기록_DB — 존재하지 않는 속성은 제거 후 재시도
-        try:
-            page = client.pages.create(
-                parent={"database_id": settings.notion_database_id},
-                properties=db_properties,
-                children=first_batch,
-            )
-        except APIResponseError as e:
-            if "is not a property that exists" in str(e):
-                # 존재하지 않는 속성 제거 후 재시도
-                for bad_key in ["지식유형", "엔티티"]:
-                    db_properties.pop(bad_key, None)
-                log.warning(f"Notion DB 속성 누락 — 지식유형/엔티티 제외 후 재시도")
-                page = client.pages.create(
-                    parent={"database_id": settings.notion_database_id},
-                    properties=db_properties,
-                    children=first_batch,
-                )
-            else:
-                raise
+        # Create page in 2026 기업AI고객담당_DB
+        page = client.pages.create(
+            parent={"database_id": settings.notion_database_id},
+            properties=db_properties,
+            children=first_batch,
+        )
 
         # Append remaining blocks in batches of 100
         page_id = page["id"]
@@ -623,6 +595,164 @@ def create_meeting_note(
 # v3 multi-agent interface
 # ---------------------------------------------------------------------------
 
+def _build_page_children_v3(
+    date: str,
+    participants: str,
+    meeting_type: str,
+    source_filename: str,
+    summary: str,
+    analyses: list[dict],
+    risks: list[str],
+) -> list[dict]:
+    """Build rich Notion block children from v3 multi-agent analysis output."""
+    blocks: list[dict] = []
+
+    # ── 📋 회의 개요 테이블 ──
+    header_rows = [("날짜", date), ("참석자", participants), ("유형", meeting_type)]
+    if source_filename:
+        header_rows.append(("녹음", source_filename))
+    header_rows = [(k, v) for k, v in header_rows if v]
+    if header_rows:
+        blocks.append({
+            "object": "block",
+            "type": "table",
+            "table": {
+                "table_width": 2,
+                "has_column_header": False,
+                "has_row_header": True,
+                "children": [
+                    {
+                        "type": "table_row",
+                        "table_row": {
+                            "cells": [
+                                [{"type": "text", "text": {"content": k}, "annotations": {"bold": True}}],
+                                [{"type": "text", "text": {"content": str(v)}}],
+                            ]
+                        },
+                    }
+                    for k, v in header_rows
+                ],
+            },
+        })
+        blocks.append(_divider())
+
+    # ── 📌 핵심 요약 ──
+    if summary:
+        blocks.append({
+            "object": "block", "type": "heading_2",
+            "heading_2": {"rich_text": _parse_rich_text("📌 핵심 요약"), "color": "blue_background"},
+        })
+        blocks.append(_callout(summary, emoji="📌", color="blue_background"))
+        blocks.append(_divider())
+
+    # ── 토픽별 섹션 ──
+    all_actions: list[str] = []
+    all_decisions: list[str] = []
+
+    for i, analysis in enumerate(analyses, 1):
+        topic = analysis.get("topic", f"토픽 {i}")
+        five_w = analysis.get("five_w_one_h", {})
+        key_facts = analysis.get("key_facts", [])
+        decisions = analysis.get("decisions", [])
+        actions = analysis.get("actions", [])
+
+        all_decisions.extend(decisions)
+        all_actions.extend(actions)
+
+        blocks.append(_heading2(f"📊 토픽 {i}: {topic}"))
+
+        # 5W1H 테이블
+        w_rows = [
+            ("When", five_w.get("when", "")), ("Where", five_w.get("where", "")),
+            ("Who", five_w.get("who", "")), ("What", five_w.get("what", "")),
+            ("Why", five_w.get("why", "")), ("How", five_w.get("how", "")),
+        ]
+        w_rows = [(k, v) for k, v in w_rows if v]
+        if w_rows:
+            blocks.append({
+                "object": "block",
+                "type": "table",
+                "table": {
+                    "table_width": 2,
+                    "has_column_header": False,
+                    "has_row_header": True,
+                    "children": [
+                        {
+                            "type": "table_row",
+                            "table_row": {
+                                "cells": [
+                                    [{"type": "text", "text": {"content": k}, "annotations": {"bold": True}}],
+                                    [{"type": "text", "text": {"content": v[:2000]}}],
+                                ]
+                            },
+                        }
+                        for k, v in w_rows
+                    ],
+                },
+            })
+
+        # 핵심 팩트
+        if key_facts:
+            blocks.append(_heading3("핵심 팩트"))
+            for fact in key_facts:
+                blocks.append(_quote(f"💬 {str(fact)[:500]}"))
+
+        # 액션 아이템
+        if actions:
+            blocks.append(_heading3("액션 아이템"))
+            for action in actions:
+                blocks.append({
+                    "object": "block", "type": "to_do",
+                    "to_do": {"rich_text": _parse_rich_text(str(action)[:200]), "checked": False},
+                })
+
+        # 인사이트 (decisions → 인사이트로 표시)
+        if decisions:
+            blocks.append(_heading3("인사이트"))
+            for d in decisions:
+                blocks.append(_bulleted_list(str(d)[:300]))
+
+        # So What
+        so_what = actions[0] if actions else (decisions[0] if decisions else "")
+        if so_what:
+            blocks.append(_callout(f"So What: {so_what[:300]}", emoji="💡", color="yellow_background"))
+
+        blocks.append(_divider())
+
+    # ── ✅ 결정사항 ──
+    if all_decisions:
+        blocks.append(_heading2("✅ 결정사항"))
+        for d in all_decisions:
+            for chunk in _chunk_text(d):
+                blocks.append(_bulleted_list(chunk))
+        blocks.append(_divider())
+
+    # ── ⚠️ 리스크 ──
+    if risks:
+        blocks.append({
+            "object": "block", "type": "heading_2",
+            "heading_2": {"rich_text": _parse_rich_text("⚠️ 리스크"), "color": "yellow_background"},
+        })
+        for risk in risks:
+            for chunk in _chunk_text(risk):
+                blocks.append(_bulleted_list(chunk))
+        blocks.append(_divider())
+
+    # ── 🔴 To-Do / Action Items ──
+    if all_actions:
+        blocks.append({
+            "object": "block", "type": "heading_2",
+            "heading_2": {"rich_text": _parse_rich_text("🔴 To-Do / Action Items"), "color": "red_background"},
+        })
+        for action in all_actions:
+            blocks.append({
+                "object": "block", "type": "to_do",
+                "to_do": {"rich_text": _parse_rich_text(str(action)[:200]), "checked": False},
+            })
+
+    return blocks
+
+
 def create_meeting_note_v3(
     *,
     database_id: str,
@@ -633,64 +763,63 @@ def create_meeting_note_v3(
     analyses: list[dict],
     properties: dict | None = None,
 ) -> dict[str, str]:
-    """Create a Notion page via the v3 multi-agent pipeline.
-
-    Args:
-        database_id: Target Notion database ID.
-        api_key: Notion integration token.
-        title: Page title.
-        date: ISO date string (YYYY-MM-DD).
-        transcript: Full transcript text.
-        analyses: List of analysis dicts (topics with five_w_one_h etc.).
-        properties: Optional extra page properties (project, meeting_type, importance).
-
-    Returns:
-        dict with ``id`` and ``url`` of the created page.
-
-    Raises:
-        RuntimeError: on any API failure (wraps underlying exception).
-    """
+    """Create a Notion page via the v3 multi-agent pipeline with rich block content."""
     client = Client(auth=api_key)
+    extra = properties or {}
+    risks: list[str] = extra.get("risks", [])
 
-    props: dict = {"제목": {"title": [{"text": {"content": title}}]}}
+    # ── DB Properties (타겟: 개인기록_DB) ──
+    def _safe_select(v: str) -> str:
+        return v.split(",")[0].strip() if "," in v else v
+
+    props: dict = {
+        "회의 이름": {"title": [{"text": {"content": title}}]},
+    }
     if date:
         props["날짜"] = {"date": {"start": date}}
-
-    extra = properties or {}
     if extra.get("meeting_type"):
-        props["미팅유형"] = {"select": {"name": extra["meeting_type"]}}
-    if extra.get("importance"):
-        props["중요도"] = {"select": {"name": extra["importance"]}}
-    if extra.get("project"):
-        project_list = extra["project"] if isinstance(extra["project"], list) else [extra["project"]]
-        props["프로젝트"] = {"multi_select": [{"name": p} for p in project_list]}
+        props["유형"] = {"select": {"name": _safe_select(extra["meeting_type"])}}
+    if extra.get("participants"):
+        props["참석자 1"] = {"rich_text": [{"text": {"content": str(extra["participants"])[:2000]}}]}
+    if extra.get("customer"):
+        props["고객명"] = {"select": {"name": _safe_select(str(extra["customer"]))[:100]}}
+    if extra.get("summary"):
+        props["요약"] = {"rich_text": [{"text": {"content": str(extra["summary"])[:2000]}}]}
+    if extra.get("next_actions"):
+        props["다음액션"] = {"rich_text": [{"text": {"content": str(extra["next_actions"])[:2000]}}]}
+    if extra.get("status"):
+        props["상태"] = {"select": {"name": _safe_select(extra["status"])}}
+    if extra.get("priority"):
+        props["우선순위"] = {"select": {"name": _safe_select(extra["priority"])}}
 
-    children: list[dict] = []
-    if transcript:
-        children.append({
-            "object": "block",
-            "type": "paragraph",
-            "paragraph": {"rich_text": [{"type": "text", "text": {"content": transcript[:2000]}}]},
-        })
-    for item in (analyses or []):
-        topic = item.get("topic", "")
-        if topic:
-            children.append({
-                "object": "block",
-                "type": "heading_2",
-                "heading_2": {"rich_text": [{"type": "text", "text": {"content": topic}}]},
-            })
-
+    # ── Create page ──
     try:
         page = client.pages.create(
             parent={"database_id": database_id},
             properties=props,
-            children=children[:100],
         )
     except Exception as exc:
         raise RuntimeError(str(exc)) from exc
 
     page_id = page["id"]
+
+    # ── Append rich content blocks ──
+    blocks = _build_page_children_v3(
+        date=date,
+        participants=extra.get("participants", ""),
+        meeting_type=extra.get("meeting_type", ""),
+        source_filename=extra.get("source_filename", ""),
+        summary=extra.get("summary", ""),
+        analyses=analyses,
+        risks=risks,
+    )
+
+    try:
+        for i in range(0, len(blocks), 100):
+            client.blocks.children.append(block_id=page_id, children=blocks[i:i + 100])
+    except Exception as exc:
+        log.warning("v3 블록 추가 실패 (페이지는 생성됨): %s", exc)
+
     page_url = page.get("url", f"https://www.notion.so/{page_id.replace('-', '')}")
     log.info("v3 Notion 페이지 생성 완료: %s", page_id)
     return {"id": page_id, "url": page_url}

@@ -11,15 +11,18 @@ _PROMPT = """다음 미팅노트를 태깅하세요. JSON으로만 응답.
 제목: {title}
 요약: {summary}
 
-반환 형식:
+JSON:
 {{
-  "project": ["프로젝트1", "프로젝트2"],
+  "project": ["프로젝트명"],
   "meeting_type": "임원보고|내부회의|고객미팅|업체미팅|기타",
-  "importance": "high|medium|low"
+  "importance": "high|medium|low",
+  "tags": ["태그1", "태그2"],
+  "knowledge_type": ["deal_progress|customer_intel|market_intel|internal_decision|other"]
 }}
 
 규칙:
-- project, meeting_type 값에 쉼표(,) 사용 금지 (Notion select API 제약)
+- project / meeting_type / tags 값에 쉼표(,) 사용 금지 (Notion select API 제약)
+- knowledge_type 복수 허용
 - 명확하지 않으면 빈 배열 또는 "기타"
 """
 
@@ -50,7 +53,7 @@ class ClassificationAgent(BaseAgent):
         )
         text = msg.content[0].text.strip()
         try:
-            parsed = json.loads(text)
+            parsed, _ = json.JSONDecoder().raw_decode(text)
         except json.JSONDecodeError as e:
             raise ValueError(f"Haiku returned invalid JSON: {e}: {text[:200]}")
 
@@ -58,4 +61,6 @@ class ClassificationAgent(BaseAgent):
             "project": _strip_commas(parsed.get("project", [])),
             "meeting_type": _strip_commas(parsed.get("meeting_type", "기타")),
             "importance": parsed.get("importance", "medium"),
+            "tags": _strip_commas(parsed.get("tags", [])),
+            "knowledge_type": _strip_commas(parsed.get("knowledge_type", [])),
         }

@@ -50,7 +50,7 @@ class SelfHealAgent(BaseAgent):
         )
         text = msg.content[0].text.strip()
         try:
-            parsed = json.loads(text)
+            parsed, _ = json.JSONDecoder().raw_decode(text)
         except json.JSONDecodeError as e:
             raise ValueError(f"SelfHeal returned invalid JSON: {e}: {text[:200]}")
 

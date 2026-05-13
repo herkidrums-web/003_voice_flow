@@ -12,10 +12,15 @@ import sys
 from datetime import date, timedelta
 from pathlib import Path
 
-from anthropic import Anthropic
+# Ensure project root is on sys.path so launchd (no PYTHONPATH) can import config/src
+_PROJ_ROOT = Path(__file__).resolve().parents[1]
+if str(_PROJ_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJ_ROOT))
+
 from notion_client import Client as NotionClient
 
 from config import get_settings
+from src.agents.cli_client import ClaudeCLIClient
 from src.agents.notion_briefing_builder import NotionBriefingPageBuilder
 from src.agents.todo_agent import TodoAgent
 
@@ -27,28 +32,47 @@ def _state_path() -> Path:
 
 
 def _collect_yesterday_files(state_path: Path, target_date: str) -> tuple[list[dict], list[dict]]:
-    """Return (done_files, failed_files) where ts is on target_date."""
+    """Return (done_files, failed_files) where processing ts is on target_date.
+
+    notion_url lives in the 'notion' stage done record, not 'wiki'.
+    Files that eventually reached wiki:done (on any date) are excluded from failed.
+    """
     if not state_path.exists():
         return [], []
-    seen_done: dict[str, dict] = {}
-    seen_failed: dict[str, dict] = {}
+    notion_urls: dict[str, str] = {}   # file -> notion_url (from any notion done record)
+    all_wiki_done: set[str] = set()    # files that ever reached wiki:done (any date)
+    seen_done: dict[str, dict] = {}    # files wiki:done on target_date
+    seen_failed: dict[str, dict] = {}  # files with any failed record on target_date
     for line in state_path.read_text(encoding="utf-8").splitlines():
         try:
             rec = json.loads(line)
         except json.JSONDecodeError:
             continue
-        ts = rec.get("ts", "")
-        if not ts.startswith(target_date):
-            continue
         f = rec.get("file")
         if not f:
             continue
         meta = rec.get("meta", {}) or {}
+        # Collect notion_url and wiki:done across ALL dates (not date-filtered)
+        if rec.get("status") == "done" and rec.get("stage") == "notion":
+            if meta.get("notion_url"):
+                notion_urls[f] = meta["notion_url"]
         if rec.get("status") == "done" and rec.get("stage") == "wiki":
-            seen_done[f] = {"file": f, "notion_url": meta.get("notion_url", ""), "title": meta.get("title", f)}
+            all_wiki_done.add(f)
+        # Date-filtered pass
+        ts = rec.get("ts", "")
+        if not ts.startswith(target_date):
+            continue
+        if rec.get("status") == "done" and rec.get("stage") == "wiki":
+            seen_done[f] = {"file": f, "notion_url": notion_urls.get(f, ""), "title": f.rsplit(".", 1)[0]}
         elif rec.get("status") == "failed":
             seen_failed[f] = {"file": f, "stage": rec.get("stage", ""), "error": meta.get("error", "")}
-    return list(seen_done.values()), list(seen_failed.values())
+    # Attach notion_url collected later in the file (append-only JSONL)
+    for entry in seen_done.values():
+        if not entry["notion_url"]:
+            entry["notion_url"] = notion_urls.get(entry["file"], "")
+    # Exclude files that eventually reached wiki:done (on any date) from failed list
+    only_failed = {f: v for f, v in seen_failed.items() if f not in all_wiki_done}
+    return list(seen_done.values()), list(only_failed.values())
 
 
 def _fetch_meeting_details(items: list[dict]) -> list[dict]:
@@ -61,51 +85,79 @@ def _fetch_meeting_details(items: list[dict]) -> list[dict]:
         notion = NotionClient(auth=settings.notion_api_key)
     except Exception as e:
         log.warning("Notion client init failed: %s", e)
-        return [{"title": i["title"], "notion_url": i["notion_url"], "topics": []} for i in items]
+        return [{"title": i["title"], "notion_url": i["notion_url"],
+                 "summary": "", "decisions": [], "actions": [], "implications": [], "risks": []}
+                for i in items]
 
     for item in items:
         url = item.get("notion_url", "")
         page_id = url.rsplit("/", 1)[-1].split("?")[0].split("-")[-1] if url else ""
         topics: list[dict] = []
+        meeting_data: dict = {"summary": "", "decisions": [], "actions": [], "implications": [], "risks": []}
         try:
             if page_id:
                 blocks = notion.blocks.children.list(block_id=page_id, page_size=100)
-                topics = _extract_topics_from_blocks(blocks.get("results", []))
+                meeting_data = _extract_meeting_summary(blocks.get("results", []))
         except Exception as e:
             log.warning("Notion fetch failed for %s: %s", item["file"], e)
-        out.append({"title": item["title"], "notion_url": url, "topics": topics})
+        out.append({"title": item["title"], "notion_url": url, **meeting_data})
     return out
 
 
-def _extract_topics_from_blocks(blocks: list[dict]) -> list[dict]:
-    topics: list[dict] = []
-    current: dict | None = None
+def _extract_meeting_summary(blocks: list[dict]) -> dict:
+    """Extract structured summary from meeting page top-level blocks."""
+    summary = ""
+    decisions: list[str] = []
+    actions: list[str] = []
+    implications: list[str] = []
+    risks: list[str] = []
+    current_section = ""
+
     for b in blocks:
         btype = b.get("type", "")
         if btype.startswith("heading_"):
-            if current:
-                topics.append(current)
-            heading_text = "".join(rt.get("plain_text", "") for rt in b.get(btype, {}).get("rich_text", []))
-            current = {"topic": heading_text, "key_facts": [], "decisions": [], "actions": []}
-        elif current and btype in ("bulleted_list_item", "numbered_list_item"):
-            text = "".join(rt.get("plain_text", "") for rt in b.get(btype, {}).get("rich_text", []))
-            tl = current["topic"].lower()
-            if "사실" in current["topic"] or "fact" in tl:
-                current["key_facts"].append(text)
-            elif "결정" in current["topic"] or "decision" in tl:
-                current["decisions"].append(text)
-            elif "액션" in current["topic"] or "action" in tl:
-                current["actions"].append(text)
-    if current:
-        topics.append(current)
-    return topics
+            current_section = "".join(
+                seg.get("plain_text", "") for seg in b.get(btype, {}).get("rich_text", [])
+            ).lower()
+        elif btype == "callout":
+            text = "".join(
+                seg.get("plain_text", "") for seg in b.get("callout", {}).get("rich_text", [])
+            ).strip()
+            if text and not summary and ("요약" in current_section or "summary" in current_section):
+                summary = text[:500]
+        elif btype in ("bulleted_list_item", "numbered_list_item"):
+            text = "".join(
+                seg.get("plain_text", "") for seg in b.get(btype, {}).get("rich_text", [])
+            ).strip()
+            if not text:
+                continue
+            if "결정" in current_section:
+                decisions.append(text)
+            elif "시사점" in current_section:
+                implications.append(text)
+            elif "리스크" in current_section or "risk" in current_section:
+                risks.append(text)
+        elif btype == "to_do":
+            text = "".join(
+                seg.get("plain_text", "") for seg in b.get("to_do", {}).get("rich_text", [])
+            ).strip()
+            if text:
+                actions.append(text)
+
+    return {
+        "summary": summary,
+        "decisions": decisions,
+        "actions": actions,
+        "implications": implications,
+        "risks": risks,
+    }
 
 
 def _call_todo_agent(batch_actions: list[dict], target_date: str) -> list[dict]:
     if not batch_actions:
         return []
     settings = get_settings()
-    client = Anthropic(api_key=settings.anthropic_api_key, timeout=settings.claude_api_timeout)
+    client = ClaudeCLIClient(cli_path=settings.claude_cli_path, timeout=settings.claude_api_timeout)
     agent = TodoAgent(client=client, model=settings.claude_model_sonnet)
     result = agent.execute({"batch_actions": batch_actions, "target_date": target_date})
     if not result.ok:
@@ -130,6 +182,14 @@ def _notify(title: str, message: str) -> None:
 
 
 def main() -> int:
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--date", metavar="YYYY-MM-DD", default=None,
+        help="처리 파일 탐색 기준일 (기본: 어제). 수동 재생성 시 사용.",
+    )
+    args = parser.parse_args()
+
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     settings = get_settings()
 
@@ -139,18 +199,17 @@ def main() -> int:
         return 2
 
     today = date.today()
-    yesterday = (today - timedelta(days=1)).isoformat()
+    target_date = args.date if args.date else (today - timedelta(days=1)).isoformat()
 
-    done, failed = _collect_yesterday_files(_state_path(), yesterday)
-    log.info("yesterday: %d done, %d failed", len(done), len(failed))
+    done, failed = _collect_yesterday_files(_state_path(), target_date)
+    log.info("target=%s: %d done, %d failed", target_date, len(done), len(failed))
 
     meetings = _fetch_meeting_details(done)
 
     batch_actions: list[dict] = []
     for m in meetings:
-        for t in m.get("topics", []):
-            for action in t.get("actions", []):
-                batch_actions.append({"source": m["title"], "action": action})
+        for action in m.get("actions", []):
+            batch_actions.append({"source": m["title"], "action": action})
     todos = _call_todo_agent(batch_actions, today.isoformat())
 
     builder = _build_briefing_builder(settings)

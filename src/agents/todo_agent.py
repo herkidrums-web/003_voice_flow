@@ -49,7 +49,7 @@ class TodoAgent(BaseAgent):
         )
         text = msg.content[0].text.strip()
         try:
-            parsed = json.loads(text)
+            parsed, _ = json.JSONDecoder().raw_decode(text)
         except json.JSONDecodeError as e:
             raise ValueError(f"Todo returned invalid JSON: {e}: {text[:200]}")
         return {"todos": parsed.get("todos", []), "target_date": target_date}

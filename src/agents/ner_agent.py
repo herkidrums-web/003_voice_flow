@@ -45,7 +45,7 @@ class NERAgent(BaseAgent):
         )
         text = msg.content[0].text.strip()
         try:
-            parsed = json.loads(text)
+            parsed, _ = json.JSONDecoder().raw_decode(text)
         except json.JSONDecodeError as e:
             raise ValueError(f"NER returned invalid JSON: {e}: {text[:200]}")
         new_terms = [t for t in parsed.get("new_terms", []) if t.get("misheard") and t.get("correct")]

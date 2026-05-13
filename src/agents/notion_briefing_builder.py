@@ -44,6 +44,17 @@ def _link_callout(label: str, url: str) -> dict:
     }
 
 
+def _summary_callout(text: str) -> dict:
+    return {
+        "object": "block", "type": "callout",
+        "callout": {
+            "rich_text": [{"type": "text", "text": {"content": text[:2000]}}],
+            "icon": {"type": "emoji", "emoji": "📌"},
+            "color": "blue_background",
+        }
+    }
+
+
 class NotionBriefingPageBuilder:
     def __init__(self, client: Any, database_id: str):
         self.client = client
@@ -59,14 +70,24 @@ class NotionBriefingPageBuilder:
             url = m.get("notion_url", "")
             if url:
                 blocks.append(_link_callout(m.get("title", ""), url))
-            for t in m.get("topics", []):
-                blocks.append(_heading(3, t.get("topic", "")))
-                for f in t.get("key_facts", []):
-                    blocks.append(_bullet(f"핵심사실 · {f}"))
-                for d in t.get("decisions", []):
-                    blocks.append(_bullet(f"결정 · {d}"))
-                for a in t.get("actions", []):
-                    blocks.append(_bullet(f"액션 · {a}"))
+            if m.get("summary"):
+                blocks.append(_summary_callout(m["summary"]))
+            if m.get("decisions"):
+                blocks.append(_heading(3, "✅ 결정사항"))
+                for d in m["decisions"]:
+                    blocks.append(_bullet(d))
+            if m.get("actions"):
+                blocks.append(_heading(3, "🔴 액션 아이템"))
+                for a in m["actions"]:
+                    blocks.append(_todo(a))
+            if m.get("implications"):
+                blocks.append(_heading(3, "⚡ 시사점"))
+                for imp in m["implications"]:
+                    blocks.append(_bullet(imp))
+            if m.get("risks"):
+                blocks.append(_heading(3, "⚠️ 리스크"))
+                for r in m["risks"]:
+                    blocks.append(_bullet(r))
         return blocks
 
     def _build_todo_blocks(self, todos: list[dict]) -> list[dict]:
@@ -110,9 +131,16 @@ class NotionBriefingPageBuilder:
             + self._build_todo_blocks(todos)
             + self._build_failed_blocks(failed)
         )
+        # Notion API allows max 100 children per request; send first 100 on create, rest via append
         page = self.client.pages.create(
             parent={"database_id": self.database_id},
             properties=self._build_properties(date, meetings, todos, failed),
-            children=children,
+            children=children[:100],
         )
-        return {"page_id": page["id"], "url": page["url"]}
+        page_id = page["id"]
+        for i in range(100, len(children), 100):
+            self.client.blocks.children.append(
+                block_id=page_id,
+                children=children[i:i + 100],
+            )
+        return {"page_id": page_id, "url": page["url"]}

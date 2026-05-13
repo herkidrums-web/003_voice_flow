@@ -10,16 +10,25 @@ def _mock_notion_client():
     return client
 
 
+def _meeting(title="20260503_네이버_KA", url="https://www.notion.so/m1",
+             summary="", decisions=None, actions=None, implications=None, risks=None):
+    return {
+        "title": title, "notion_url": url,
+        "summary": summary,
+        "decisions": decisions or [],
+        "actions": actions or [],
+        "implications": implications or [],
+        "risks": risks or [],
+    }
+
+
 def test_builds_page_with_all_db_properties():
     client = _mock_notion_client()
     builder = NotionBriefingPageBuilder(client=client, database_id="db_abc")
 
     result = builder.build(
         date="2026-05-04",
-        meetings=[
-            {"title": "20260503_네이버_KA", "notion_url": "https://www.notion.so/m1",
-             "topics": [{"topic": "T", "key_facts": ["f1"], "decisions": ["d1"], "actions": ["a1"]}]},
-        ],
+        meetings=[_meeting(decisions=["d1"], actions=["a1"])],
         todos=[{"project": "네이버클라우드", "items": ["임원일정 확정", "견적 수정"]}],
         failed=[],
     )
@@ -45,10 +54,7 @@ def test_page_body_contains_meeting_link_and_todo_blocks():
 
     builder.build(
         date="2026-05-04",
-        meetings=[
-            {"title": "M1", "notion_url": "https://www.notion.so/m1",
-             "topics": [{"topic": "T1", "key_facts": ["fact1"], "decisions": [], "actions": []}]},
-        ],
+        meetings=[_meeting(title="M1", url="https://www.notion.so/m1", decisions=["fact1"])],
         todos=[{"project": "P1", "items": ["할 일1", "할 일2"]}],
         failed=[],
     )
@@ -63,6 +69,27 @@ def test_page_body_contains_meeting_link_and_todo_blocks():
     assert "할 일1" in serialized
     todo_blocks = [c for c in children if c.get("type") == "to_do"]
     assert len(todo_blocks) >= 2
+
+
+def test_summary_callout_rendered():
+    client = _mock_notion_client()
+    builder = NotionBriefingPageBuilder(client=client, database_id="db")
+
+    builder.build(
+        date="2026-05-04",
+        meetings=[_meeting(summary="핵심 요약 내용입니다")],
+        todos=[],
+        failed=[],
+    )
+
+    children = client.pages.create.call_args.kwargs["children"]
+    callout_blocks = [c for c in children if c.get("type") == "callout"]
+    callout_texts = [
+        seg.get("text", {}).get("content", "")
+        for c in callout_blocks
+        for seg in c.get("callout", {}).get("rich_text", [])
+    ]
+    assert any("핵심 요약 내용입니다" in t for t in callout_texts)
 
 
 def test_failed_section_only_when_present():

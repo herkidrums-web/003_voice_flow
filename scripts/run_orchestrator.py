@@ -11,6 +11,7 @@ and we'd silently skip the latest recordings.
 from __future__ import annotations
 
 import logging
+import os
 import subprocess
 import sys
 import time
@@ -21,11 +22,10 @@ _PROJ_ROOT = Path(__file__).resolve().parents[1]
 if str(_PROJ_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJ_ROOT))
 
-from anthropic import Anthropic
-
 from config import get_settings
 from src.agents.analysis_agent import AnalysisAgent
 from src.agents.classification_agent import ClassificationAgent
+from src.agents.cli_client import ClaudeCLIClient
 from src.agents.dictionary_agent import DictionaryAgent
 from src.agents.grouping_agent import GroupingAgent
 from src.agents.ner_agent import NERAgent
@@ -39,6 +39,34 @@ from src.agents.validation_agent import ValidationAgent
 from src.agents.wiki_agent import WikiAgent
 
 log = logging.getLogger(__name__)
+
+
+_VOICE_MEMOS_DIR = Path(
+    "/Users/swlee/Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings"
+)
+
+
+def _mirror_fallback_sync(watch_dir: Path) -> int:
+    """Fallback: copy any m4a from Voice Memos folder missing in watch_dir.
+
+    Runs after the sync daemon check so we catch files the daemon missed.
+    Returns the number of files copied.
+    """
+    if not _VOICE_MEMOS_DIR.exists():
+        return 0
+    copied = 0
+    for src in _VOICE_MEMOS_DIR.glob("*.m4a"):
+        dst = watch_dir / src.name
+        if dst.exists():
+            continue
+        try:
+            import shutil
+            shutil.copy2(src, dst)
+            log.info("fallback copy: %s", src.name)
+            copied += 1
+        except Exception as exc:
+            log.warning("fallback copy failed %s: %s", src.name, exc)
+    return copied
 
 
 def _check_sync_health(sync_log: Path, max_age_hours: int = 24) -> tuple[bool, str]:
@@ -83,7 +111,7 @@ def _notify(title: str, message: str) -> None:
 
 
 def _build_agents(settings) -> dict:
-    client = Anthropic(api_key=settings.anthropic_api_key, timeout=settings.claude_api_timeout)
+    client = ClaudeCLIClient(cli_path=settings.claude_cli_path, timeout=settings.claude_api_timeout)
     return {
         "stt": STTAgent(cache_dir=Path(settings.stt_cache_dir)),
         "ner": NERAgent(client=client, model=settings.claude_model_sonnet),
@@ -95,6 +123,7 @@ def _build_agents(settings) -> dict:
         "classification": ClassificationAgent(client=client, model=settings.claude_model_haiku),
         "notion": NotionAgent(database_id=settings.notion_database_id, api_key=settings.notion_api_key),
         "wiki": WikiAgent(index_path=Path(settings.wiki_index_path)),
+        "todo": TodoAgent(client=client, model=settings.claude_model_haiku),
     }
 
 
@@ -164,23 +193,32 @@ def main() -> int:
     settings = get_settings()
     project_root = Path(__file__).resolve().parents[1]
 
-    sync_log = project_root / "sync.log"
+    sync_log = Path("/tmp/voiceflow-sync.log")
     ok, msg = _check_sync_health(sync_log)
     log.info("sync health: %s", msg)
     if not ok:
         _notify("VoiceFlow", f"Sync stale — Voice Memos 앱을 한번 띄워주세요. ({msg})")
         return 0
 
-    state_path = project_root / "processing_state.jsonl"
-    state = OrchestratorState(state_path)
-    agents = _build_agents(settings)
-    orchestrator = Orchestrator(agents=agents, state=state, max_self_heal=settings.self_heal_max_retries)
-
     watch_dir = Path(settings.watch_dir)
     if not watch_dir.exists():
         log.error("watch_dir not found: %s", watch_dir)
         _notify("VoiceFlow", f"watch_dir 없음: {watch_dir}")
         return 1
+
+    copied = _mirror_fallback_sync(watch_dir)
+    if copied:
+        log.info("fallback sync: %d files copied from Voice Memos", copied)
+
+    state_path = project_root / "processing_state.jsonl"
+    state = OrchestratorState(state_path)
+    agents = _build_agents(settings)
+    orchestrator = Orchestrator(
+        agents=agents,
+        state=state,
+        max_self_heal=settings.self_heal_max_retries,
+        todo_output_dir=project_root,
+    )
 
     pending = _list_pending(
         watch_dir, state,
@@ -190,6 +228,12 @@ def main() -> int:
     if not pending:
         log.info("no pending files")
         return 0
+
+    # Limit batch size per run (recent files first) to avoid multi-hour runs
+    max_per_run = int(os.environ.get("VOICEFLOW_MAX_PER_RUN", "20"))
+    if len(pending) > max_per_run:
+        log.info("capping batch: %d → %d files (VOICEFLOW_MAX_PER_RUN=%d)", len(pending), max_per_run, max_per_run)
+        pending = pending[-max_per_run:]  # sorted by name = chronological; take latest
 
     log.info("processing %d files", len(pending))
     result = orchestrator.process_batch(pending)
