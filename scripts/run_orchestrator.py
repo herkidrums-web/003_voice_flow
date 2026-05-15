@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import subprocess
 import sys
 import time
@@ -98,6 +99,50 @@ def _check_orchestrator_health(heartbeat: Path, max_age_hours: int = 25) -> tupl
     return True, f"orchestrator alive ({age_hours:.1f}h ago)"
 
 
+def _free_memory_gb() -> float | None:
+    """Return free + speculative + inactive pages in GB via vm_stat. None if unavailable.
+
+    `free` alone underestimates available memory on macOS; inactive/speculative
+    are reclaimable. Used by the memory guard to detect pressure before STT
+    triggers jetsam (see 2026-05-15 incident: mlx-whisper unified memory accrual
+    drove free → 161 MB while running an 11-file batch).
+    """
+    try:
+        r = subprocess.run(["vm_stat"], capture_output=True, text=True, timeout=3)
+        if r.returncode != 0:
+            return None
+        m_page = re.search(r"page size of (\d+) bytes", r.stdout)
+        page = int(m_page.group(1)) if m_page else 16384
+        def grab(label: str) -> int:
+            m = re.search(rf"Pages {label}:\s+(\d+)", r.stdout)
+            return int(m.group(1)) if m else 0
+        pages = grab("free") + grab("speculative") + grab("inactive")
+        return pages * page / (1024 ** 3)
+    except Exception:
+        return None
+
+
+def _wait_for_memory(min_free_gb: float, max_wait_s: int = 300) -> bool:
+    """Block until free memory ≥ min_free_gb. Returns True if pressure cleared,
+    False if max_wait_s elapsed (caller can abort)."""
+    start = time.monotonic()
+    while True:
+        free = _free_memory_gb()
+        if free is None:
+            log.warning("vm_stat unavailable; skipping memory guard")
+            return True
+        if free >= min_free_gb:
+            return True
+        elapsed = time.monotonic() - start
+        if elapsed > max_wait_s:
+            log.warning("memory pressure persisted %.0fs (free=%.1fGB < %.1fGB); aborting batch",
+                        elapsed, free, min_free_gb)
+            return False
+        log.warning("memory pressure: free=%.1fGB < %.1fGB threshold; sleeping 30s",
+                    free, min_free_gb)
+        time.sleep(30)
+
+
 def _notify(title: str, message: str) -> None:
     """Best-effort macOS notification. Never raises."""
     try:
@@ -121,7 +166,11 @@ def _build_agents(settings) -> dict:
         "validation": ValidationAgent(client=client, model=settings.claude_model_sonnet),
         "self_heal": SelfHealAgent(client=client, model=settings.claude_model_sonnet, max_retries=settings.self_heal_max_retries),
         "classification": ClassificationAgent(client=client, model=settings.claude_model_haiku),
-        "notion": NotionAgent(database_id=settings.notion_database_id, api_key=settings.notion_api_key),
+        "notion": NotionAgent(
+            database_id=settings.notion_database_id,
+            api_key=settings.notion_api_key,
+            state_path=Path(__file__).resolve().parents[1] / "processing_state.jsonl",
+        ),
         "wiki": WikiAgent(index_path=Path(settings.wiki_index_path)),
         "todo": TodoAgent(client=client, model=settings.claude_model_haiku),
     }
@@ -229,11 +278,21 @@ def main() -> int:
         log.info("no pending files")
         return 0
 
-    # Limit batch size per run (recent files first) to avoid multi-hour runs
-    max_per_run = int(os.environ.get("VOICEFLOW_MAX_PER_RUN", "20"))
+    # Limit batch size per run to avoid mlx-whisper unified memory accrual
+    # triggering jetsam. Default 3 (see 2026-05-15: 11-file batch drove free → 161MB).
+    # Override with VOICEFLOW_MAX_PER_RUN env when running interactively with monitoring.
+    max_per_run = int(os.environ.get("VOICEFLOW_MAX_PER_RUN", "3"))
     if len(pending) > max_per_run:
         log.info("capping batch: %d → %d files (VOICEFLOW_MAX_PER_RUN=%d)", len(pending), max_per_run, max_per_run)
         pending = pending[-max_per_run:]  # sorted by name = chronological; take latest
+
+    # Memory guard: refuse to start if system is already under pressure.
+    # Disable with VOICEFLOW_MEMORY_GUARD=0 (e.g. CI).
+    if os.environ.get("VOICEFLOW_MEMORY_GUARD", "1") != "0":
+        min_free_gb = float(os.environ.get("VOICEFLOW_MIN_FREE_GB", "6"))
+        if not _wait_for_memory(min_free_gb=min_free_gb, max_wait_s=300):
+            _notify("VoiceFlow", f"메모리 부족 — 배치 중단 (free < {min_free_gb}GB)")
+            return 3
 
     log.info("processing %d files", len(pending))
     result = orchestrator.process_batch(pending)

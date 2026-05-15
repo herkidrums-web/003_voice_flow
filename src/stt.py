@@ -183,6 +183,16 @@ def transcribe_audio(audio_path: str) -> tuple[list[dict], float]:
     filtered = filter_segments(raw_segments)
     duration = result.get("duration", filtered[-1]["end"] if filtered else 0)
 
+    # Release MLX activation/KV cache between files. Without this, unified-memory
+    # usage accumulates across calls (2026-05-15: 11-file batch → 35GB RSS each).
+    # The model weights stay loaded, only intermediate tensors are freed.
+    del result, raw_segments
+    try:
+        import mlx.core as mx
+        mx.metal.clear_cache()
+    except Exception:
+        pass
+
     elapsed = time.time() - start
     log.info(f"STT 완료: {len(filtered)}개 세그먼트, {duration/60:.1f}분 ({elapsed:.1f}초)")
     return filtered, duration

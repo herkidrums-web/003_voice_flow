@@ -42,3 +42,17 @@ def test_invalid_json_returns_error():
     agent = NERAgent(client=c, model="m")
     result = agent.execute({"transcript": "x", "known_terms": []})
     assert result.ok is False
+
+
+def test_long_transcript_is_truncated():
+    # Regression: 2026-05-15 jetsam — 61k-char transcript made CLI subprocess
+    # balloon. NER only needs each proper noun once, so head-only is sufficient.
+    # Use an ASCII sentinel char absent from the prompt template to count exactly.
+    sentinel = "Q"
+    big = sentinel * 100_000
+    response = {"new_terms": []}
+    client = _mock_client(response)
+    agent = NERAgent(client=client, model="m")
+    agent.execute({"transcript": big, "known_terms": []})
+    sent = client.messages.create.call_args.kwargs["messages"][0]["content"]
+    assert sent.count(sentinel) == NERAgent._MAX_TRANSCRIPT_CHARS

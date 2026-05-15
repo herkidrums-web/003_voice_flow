@@ -35,9 +35,18 @@ class NERAgent(BaseAgent):
         self.client = client
         self.model = model
 
+    # Cap transcript at ~30k chars (~30분 음성) before sending to Claude.
+    # NER only needs to see each proper noun once, so head-only is fine.
+    # Without this, a 64분 transcript (61k chars) makes the CLI subprocess
+    # balloon and amplifies memory pressure (see 2026-05-15 jetsam incident).
+    _MAX_TRANSCRIPT_CHARS = 30000
+
     def _run(self, payload: dict[str, Any]) -> dict[str, Any]:
         known = "\n".join(f"- {t}" for t in payload.get("known_terms", []))
-        prompt = _PROMPT.format(known=known or "(없음)", transcript=payload["transcript"])
+        transcript = payload["transcript"]
+        if len(transcript) > self._MAX_TRANSCRIPT_CHARS:
+            transcript = transcript[: self._MAX_TRANSCRIPT_CHARS]
+        prompt = _PROMPT.format(known=known or "(없음)", transcript=transcript)
         msg = self.client.messages.create(
             model=self.model,
             max_tokens=2048,
