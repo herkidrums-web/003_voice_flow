@@ -12,25 +12,47 @@ def _write_state(path: Path, records: list[dict]) -> None:
             fp.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
 
-def test_collect_yesterday_files_filters_by_date(tmp_path):
+def test_meeting_date_from_filename():
+    from scripts.daily_briefing import _meeting_date_from_filename
+
+    assert _meeting_date_from_filename("20260514 160215.m4a") == "2026-05-14"
+    assert _meeting_date_from_filename("20251222 185927-57AF436F.m4a") == "2025-12-22"
+    assert _meeting_date_from_filename("noprefix.m4a") is None
+    assert _meeting_date_from_filename("") is None
+
+
+def test_collect_filters_by_meeting_date_not_processing_ts(tmp_path):
+    """일일 브리핑은 '미팅 날짜'(파일명)로 묶여야 한다 — 처리 ts 무관.
+
+    핵심 회귀 방지: mirror에 쌓인 과거 백로그가 target_date에 처리돼도
+    (ts=target_date) 일일 브리핑에 섞이면 안 된다.
+    """
     from scripts.daily_briefing import _collect_yesterday_files
 
     state_path = tmp_path / "state.jsonl"
     yesterday = (date.today() - timedelta(days=1)).isoformat()
     today = date.today().isoformat()
-    # notion_url lives in the 'notion' stage done record (not wiki)
+    ymd = yesterday.replace("-", "")          # 미팅 날짜 = 어제
     _write_state(state_path, [
-        {"file": "a.m4a", "stage": "notion", "status": "done", "ts": f"{yesterday}T09:00:00+00:00",
-         "meta": {"notion_url": "u1"}},
-        {"file": "a.m4a", "stage": "wiki", "status": "done", "ts": f"{yesterday}T10:00:00+00:00", "meta": {}},
-        {"file": "b.m4a", "stage": "wiki", "status": "done", "ts": f"{today}T11:00:00+00:00", "meta": {}},
-        {"file": "c.m4a", "stage": "validation", "status": "failed", "ts": f"{yesterday}T12:00:00+00:00",
-         "meta": {"error": "max retries"}},
+        # a: 어제 미팅, notion_url + wiki done → 포함
+        {"file": f"{ymd} 0900.m4a", "stage": "notion", "status": "done",
+         "ts": f"{today}T09:00:00+00:00", "meta": {"notion_url": "u1"}},
+        {"file": f"{ymd} 0900.m4a", "stage": "wiki", "status": "done",
+         "ts": f"{today}T10:00:00+00:00", "meta": {}},
+        # b: 어제 미팅, 처리는 '오늘'(ts) — 그래도 미팅날짜=어제라 포함
+        {"file": f"{ymd} 1400.m4a", "stage": "wiki", "status": "done",
+         "ts": f"{today}T11:00:00+00:00", "meta": {}},
+        # backlog: 작년 12월 미팅인데 어제 처리됨(ts=어제) → 반드시 제외
+        {"file": "20251222 1859.m4a", "stage": "wiki", "status": "done",
+         "ts": f"{yesterday}T12:00:00+00:00", "meta": {}},
+        # c: 어제 미팅, 끝내 실패 → failed
+        {"file": f"{ymd} 1600.m4a", "stage": "validation", "status": "failed",
+         "ts": f"{today}T12:00:00+00:00", "meta": {"error": "max retries"}},
     ])
     files, failed = _collect_yesterday_files(state_path, yesterday)
-    assert {f["file"] for f in files} == {"a.m4a"}
-    assert files[0]["notion_url"] == "u1"
-    assert {f["file"] for f in failed} == {"c.m4a"}
+    assert {f["file"] for f in files} == {f"{ymd} 0900.m4a", f"{ymd} 1400.m4a"}
+    assert next(f for f in files if f["file"] == f"{ymd} 0900.m4a")["notion_url"] == "u1"
+    assert {f["file"] for f in failed} == {f"{ymd} 1600.m4a"}
 
 
 def test_main_creates_notion_page_and_notifies(tmp_path, monkeypatch):
@@ -38,8 +60,10 @@ def test_main_creates_notion_page_and_notifies(tmp_path, monkeypatch):
 
     state_path = tmp_path / "processing_state.jsonl"
     yesterday = (date.today() - timedelta(days=1)).isoformat()
+    ymd = yesterday.replace("-", "")
     _write_state(state_path, [
-        {"file": "x.m4a", "stage": "wiki", "status": "done", "ts": f"{yesterday}T09:00:00+00:00",
+        {"file": f"{ymd} 0900.m4a", "stage": "wiki", "status": "done",
+         "ts": f"{yesterday}T09:00:00+00:00",
          "meta": {"notion_url": "https://www.notion.so/x", "title": "20260503_test"}},
     ])
 

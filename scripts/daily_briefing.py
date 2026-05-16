@@ -31,8 +31,28 @@ def _state_path() -> Path:
     return Path(__file__).resolve().parents[1] / "processing_state.jsonl"
 
 
+def _meeting_date_from_filename(filename: str) -> str | None:
+    """녹음 파일명 앞 8자리(YYYYMMDD)를 'YYYY-MM-DD'로 변환.
+
+    예: '20260514 160215.m4a' → '2026-05-14'. 추출 실패 시 None.
+    일일 브리핑은 '처리된 날짜'가 아니라 '미팅이 있었던 날짜'로 묶어야
+    하므로(백로그 혼입 방지) 이 함수가 선별 기준이 된다.
+    """
+    import re
+
+    m = re.match(r"\s*(\d{4})(\d{2})(\d{2})", filename or "")
+    if not m:
+        return None
+    return f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
+
+
 def _collect_yesterday_files(state_path: Path, target_date: str) -> tuple[list[dict], list[dict]]:
-    """Return (done_files, failed_files) where processing ts is on target_date.
+    """Return (done_files, failed_files) for meetings whose **recording date**
+    (filename YYYYMMDD) == target_date — NOT the processing timestamp.
+
+    처리 ts 기준이면 mirror에 쌓인 과거 백로그(작년 12월 등)가 처리된 날
+    함께 묶여 일일 브리핑이 '주간처럼' 보이는 문제가 생긴다. 미팅 날짜
+    기준으로 필터하면 늦게 처리돼도 올바른 날짜 페이지로 귀속된다.
 
     notion_url lives in the 'notion' stage done record, not 'wiki'.
     Files that eventually reached wiki:done (on any date) are excluded from failed.
@@ -41,8 +61,7 @@ def _collect_yesterday_files(state_path: Path, target_date: str) -> tuple[list[d
         return [], []
     notion_urls: dict[str, str] = {}   # file -> notion_url (from any notion done record)
     all_wiki_done: set[str] = set()    # files that ever reached wiki:done (any date)
-    seen_done: dict[str, dict] = {}    # files wiki:done on target_date
-    seen_failed: dict[str, dict] = {}  # files with any failed record on target_date
+    failed_recs: dict[str, dict] = {}  # file -> latest failed record (any date)
     for line in state_path.read_text(encoding="utf-8").splitlines():
         try:
             rec = json.loads(line)
@@ -52,26 +71,25 @@ def _collect_yesterday_files(state_path: Path, target_date: str) -> tuple[list[d
         if not f:
             continue
         meta = rec.get("meta", {}) or {}
-        # Collect notion_url and wiki:done across ALL dates (not date-filtered)
         if rec.get("status") == "done" and rec.get("stage") == "notion":
             if meta.get("notion_url"):
                 notion_urls[f] = meta["notion_url"]
         if rec.get("status") == "done" and rec.get("stage") == "wiki":
             all_wiki_done.add(f)
-        # Date-filtered pass
-        ts = rec.get("ts", "")
-        if not ts.startswith(target_date):
-            continue
-        if rec.get("status") == "done" and rec.get("stage") == "wiki":
-            seen_done[f] = {"file": f, "notion_url": notion_urls.get(f, ""), "title": f.rsplit(".", 1)[0]}
         elif rec.get("status") == "failed":
-            seen_failed[f] = {"file": f, "stage": rec.get("stage", ""), "error": meta.get("error", "")}
-    # Attach notion_url collected later in the file (append-only JSONL)
-    for entry in seen_done.values():
-        if not entry["notion_url"]:
-            entry["notion_url"] = notion_urls.get(entry["file"], "")
-    # Exclude files that eventually reached wiki:done (on any date) from failed list
-    only_failed = {f: v for f, v in seen_failed.items() if f not in all_wiki_done}
+            failed_recs[f] = {"file": f, "stage": rec.get("stage", ""),
+                              "error": meta.get("error", "")}
+    # done = 미팅 날짜가 target_date 인 파일 중 wiki:done 도달한 것
+    seen_done = {
+        f: {"file": f, "notion_url": notion_urls.get(f, ""), "title": f.rsplit(".", 1)[0]}
+        for f in all_wiki_done
+        if _meeting_date_from_filename(f) == target_date
+    }
+    # failed = 미팅 날짜가 target_date 인데 끝내 wiki:done 못 한 파일
+    only_failed = {
+        f: v for f, v in failed_recs.items()
+        if f not in all_wiki_done and _meeting_date_from_filename(f) == target_date
+    }
     return list(seen_done.values()), list(only_failed.values())
 
 
