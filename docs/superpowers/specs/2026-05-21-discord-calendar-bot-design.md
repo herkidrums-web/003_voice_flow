@@ -26,7 +26,7 @@
 | 트리거 조건 | (a) 메시지 이미지 첨부 있음 OR (b) 텍스트가 `"일정"`/`"캘린더"`로 시작 |
 | 모호한 날짜 처리 | "내일"/"다음주 화"는 오늘 기준 자동 계산. 날짜 자체가 없으면 되묻기 |
 | 모호한 시각 처리 | "저녁"/"점심"/"오후" 등 시간대만 있으면 되묻지 않고 종일 이벤트 + "(시간 미정)" 표기 |
-| 수정/삭제 인터페이스 | 자연어 답장 → 기존 `_handle_claude` 세션 컨텍스트 재사용 |
+| 수정/삭제 인터페이스 | "캘린더 ..." 키워드로 트리거 → `_handle_calendar` 전용 세션이 검색·수정·삭제 |
 | 일정 외 메시지 | `not_event` 응답 → 🤷 리액션만, 답장 없음 |
 
 ## 3. 아키텍처
@@ -241,15 +241,19 @@ else:
 
 ## 6. 수정/삭제 시나리오
 
-별도 핸들러 추가 없음. listener는 채널당 `--resume <session_id>`로 Claude 세션을 유지하므로, 사용자가 등록 직후 자연어로 답장하면 `_handle_claude`가 이전 컨텍스트(어떤 이벤트를 만들었는지)를 알고 처리한다.
+수정/삭제도 `_handle_calendar`가 처리한다. `_handle_calendar`는 일반 대화(`_handle_claude`)와 **분리된 전용 세션**(`state["calendar_session_id"]`)을 사용한다 — calendar 프롬프트의 "JSON만 응답" 지시가 일반 대화 세션을 오염시키지 않도록 격리한다.
 
-| 사용자 답장 예시 | 처리 경로 |
+수정/삭제는 `"일정"`/`"캘린더"` 키워드로 명시 트리거한다. `_build_calendar_prompt`가 수정/삭제 의도를 인식해, Claude가 `list_events`로 대상 이벤트를 검색한 뒤 `update_event`/`delete_event`를 호출한다.
+
+| 사용자 메시지 예시 | 처리 경로 |
 |---|---|
-| "방금 거 30분 늦춰줘" | `_handle_claude` → 세션 컨텍스트 → `mcp__update_event` |
-| "방금 등록한 거 삭제해줘" | `_handle_claude` → 세션 컨텍스트 → `mcp__delete_event` |
-| "토스 미팅 시간을 16시로 옮겨" | `_handle_claude` → 캘린더 검색 → `mcp__update_event` |
+| "캘린더 방금 거 30분 늦춰줘" | `_handle_calendar` → calendar 세션 → `list_events` → `update_event` → `status=updated` |
+| "캘린더 6/22 김태원 저녁 삭제해줘" | `_handle_calendar` → calendar 세션 → `list_events` → `delete_event` → `status=deleted` |
+| "일정 토스 미팅 시간을 16시로 옮겨" | `_handle_calendar` → calendar 세션 → `list_events` → `update_event` |
 
-세션 만료(`/reset` 또는 새 채널) 시는 캘린더 직접 조작 또는 새 메시지로 다시 트리거.
+calendar 세션은 calendar 턴끼리만 컨텍스트를 잇는다("방금 거"는 직전 calendar 등록을 가리킴). 세션 만료(`/reset`)나 대상이 모호하면 `need_confirmation`으로 되묻거나 캘린더를 직접 조작한다.
+
+`/reset` 명령은 일반 대화 세션과 calendar 세션을 **모두** 초기화한다.
 
 ## 7. 안전장치
 
@@ -273,7 +277,7 @@ else:
 | T3 | "캘린더 5/30 오후 3시 강남 코람코 점심" | 즉시 등록 답장 (5/30 15:00) |
 | T4 | 강아지 사진 + "귀엽다" | 🤷 리액션, 답장 없음 |
 | T5 | "브리핑" / "음성메모" / "ping" / "상태" | 기존 동작 회귀 없음 |
-| T6 | T1 등록 직후 "방금 거 30분 늦춰줘" | `_handle_claude` 컨텍스트로 update_event 호출, 캘린더 시간 변경 |
+| T6 | T1 등록 직후 "캘린더 방금 거 30분 늦춰줘" | `_handle_calendar` calendar 세션으로 update_event 호출, 캘린더 시간 변경 |
 | T7 | 메시지 첨부 이미지 다운로드 실패 (네트워크) | 텍스트만 갖고 추출 시도, 부족하면 `need_confirmation` |
 
 ## 9. 스코프 밖 (YAGNI)

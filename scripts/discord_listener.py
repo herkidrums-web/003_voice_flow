@@ -529,7 +529,16 @@ def _build_calendar_prompt(content: str, image_paths: list[Path]) -> str:
         f"시간대는 Asia/Seoul.\n\n"
         f"입력 메시지:\n{body}\n{image_hint}\n\n"
         "작업:\n"
-        "1. 입력에서 일정 정보(제목, 일시, 장소, 참석자)를 추출\n"
+        "0. 메시지가 기존 일정의 수정/삭제 요청이면 (예: '방금 거 30분 늦춰줘',\n"
+        "   '6/22 김태원 저녁 삭제해줘'):\n"
+        "   - mcp__claude_ai_Google_Calendar__list_events 로 대상 이벤트를 검색\n"
+        "     (fullText 키워드 또는 날짜 범위 활용)\n"
+        "   - 수정: mcp__claude_ai_Google_Calendar__update_event 호출 →\n"
+        "     {\"status\":\"updated\",\"event_link\":\"<htmlLink>\",\"summary\":\"<KR 한줄>\"}\n"
+        "   - 삭제: mcp__claude_ai_Google_Calendar__delete_event 호출 →\n"
+        "     {\"status\":\"deleted\",\"summary\":\"<KR 한줄>\"}\n"
+        "   - 대상 이벤트가 둘 이상이거나 특정 불가하면 need_confirmation\n"
+        "1. 신규 등록이면, 입력에서 일정 정보(제목, 일시, 장소, 참석자)를 추출\n"
         "2. 일정과 무관한 잡담/광고/링크/사진이면 {\"status\":\"not_event\"} 반환\n"
         "3. 날짜 자체가 불명확하면(날짜 없음, '조만간', '다음에' 등)\n"
         "   → {\"status\":\"need_confirmation\",\"question\":\"...\"}\n"
@@ -547,6 +556,7 @@ def _build_calendar_prompt(content: str, image_paths: list[Path]) -> str:
         "   - attendees는 이메일 모르면 비움\n"
         "5. 등록 성공 시 {\"status\":\"created\",\"event_link\":\"<htmlLink>\","
         "\"summary\":\"<KR 한줄>\",\"event_id\":\"<id>\"}\n\n"
+        "★ MCP 도구를 실제로 호출한 뒤 그 결과로만 JSON을 작성할 것. event_id·링크를 지어내지 말 것.\n"
         "★ 응답은 JSON 한 덩어리만. 다른 텍스트 금지.\n"
     )
 
@@ -567,7 +577,9 @@ def _handle_calendar(token: str, msg: dict, log: logging.Logger, state: dict) ->
 
     prompt = _build_calendar_prompt(content, image_paths)
 
-    sid = state.get("claude_session_id")
+    # calendar 전용 세션 — 일반 대화(_handle_claude) 세션과 분리해
+    # "JSON만 응답" 지시가 일반 대화로 새지 않도록 격리한다.
+    sid = state.get("calendar_session_id")
     cmd = [
         CLAUDE_CLI, "-p",
         "--output-format", "json",
@@ -616,7 +628,7 @@ def _handle_calendar(token: str, msg: dict, log: logging.Logger, state: dict) ->
 
     new_sid = envelope.get("session_id")
     if new_sid:
-        state["claude_session_id"] = new_sid
+        state["calendar_session_id"] = new_sid
         _save_state(state)
 
     payload_text = _strip_json_fence((envelope.get("result") or "").strip())
@@ -634,6 +646,13 @@ def _handle_calendar(token: str, msg: dict, log: logging.Logger, state: dict) ->
         link = payload.get("event_link", "")
         summary = payload.get("summary", "(요약 없음)")
         _send(token, f"✅ 등록 완료 — {summary}\n🔗 {link}", reply_to=msg["id"])
+    elif status == "updated":
+        link = payload.get("event_link", "")
+        summary = payload.get("summary", "(요약 없음)")
+        _send(token, f"✅ 수정 완료 — {summary}\n🔗 {link}", reply_to=msg["id"])
+    elif status == "deleted":
+        summary = payload.get("summary", "(요약 없음)")
+        _send(token, f"🗑️ 삭제 완료 — {summary}", reply_to=msg["id"])
     elif status == "need_confirmation":
         q = payload.get("question", "확인이 필요합니다.")
         _send(token, f"❓ {q}", reply_to=msg["id"])
@@ -645,11 +664,16 @@ def _handle_calendar(token: str, msg: dict, log: logging.Logger, state: dict) ->
 
 
 def _handle_reset(token: str, msg: dict, log: logging.Logger, state: dict) -> None:
-    """Claude 채널 세션 초기화 — 다음 메시지부터 새 대화."""
+    """채널 세션 초기화 — 일반 대화·calendar 세션 모두 다음 메시지부터 새로."""
     old = state.pop("claude_session_id", None)
+    old_cal = state.pop("calendar_session_id", None)
     _save_state(state)
-    log.info("claude session reset (was %s)", old)
-    _send(token, f"🧹 Claude 세션 리셋 완료 (이전 세션: {old or '없음'})", reply_to=msg["id"])
+    log.info("session reset (claude=%s calendar=%s)", old, old_cal)
+    _send(
+        token,
+        f"🧹 세션 리셋 완료 (대화: {old or '없음'} / 캘린더: {old_cal or '없음'})",
+        reply_to=msg["id"],
+    )
 
 
 HANDLERS: dict[str, Callable] = {

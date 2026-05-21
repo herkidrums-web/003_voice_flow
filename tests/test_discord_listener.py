@@ -133,3 +133,11 @@ class TestBuildCalendarPrompt:
                    "mcp__claude_ai_Google_Calendar__create_event",
                    "Asia/Seoul"):
             assert kw in prompt, f"missing keyword in prompt: {kw}"
+
+    def test_modify_delete_instructions_present(self):
+        prompt = discord_listener._build_calendar_prompt("test", [])
+        for kw in ("updated", "deleted",
+                   "mcp__claude_ai_Google_Calendar__update_event",
+                   "mcp__claude_ai_Google_Calendar__delete_event",
+                   "mcp__claude_ai_Google_Calendar__list_events"):
+            assert kw in prompt, f"missing keyword in prompt: {kw}"
