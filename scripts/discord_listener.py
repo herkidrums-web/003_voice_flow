@@ -388,6 +388,21 @@ def _handle_status(token: str, msg: dict, log: logging.Logger) -> None:
     )
 
 
+def _strip_json_fence(text: str) -> str:
+    """Strip surrounding ```json ... ``` or ``` ... ``` fences (if any)."""
+    s = text.strip()
+    if not s.startswith("```"):
+        return s
+    # ```json\n...\n```  또는  ```\n...\n```
+    inner = s[3:]  # 첫 ``` 제거
+    if inner.startswith("json"):
+        inner = inner[4:]
+    inner = inner.lstrip("\n").rstrip()
+    if inner.endswith("```"):
+        inner = inner[:-3].rstrip()
+    return inner
+
+
 def _chunks(text: str, size: int) -> list[str]:
     """Discord 2000자 제한 대응 — 줄 단위 우선, 안 되면 길이로 강제 분할."""
     if len(text) <= size:

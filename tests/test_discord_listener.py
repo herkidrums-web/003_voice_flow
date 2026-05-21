@@ -80,3 +80,26 @@ class TestMatchCommandCalendar:
         # 이미지 첨부 + "ping" → ping이 우선 (회귀 방지)
         atts = [{"content_type": "image/png", "url": "https://x/p.png"}]
         assert discord_listener._match_command("ping", atts) == "ping"
+
+
+class TestStripJsonFence:
+    """Claude CLI 응답의 ```json ... ``` 펜스 제거."""
+
+    def test_no_fence_returns_unchanged(self):
+        s = '{"status":"created"}'
+        assert discord_listener._strip_json_fence(s) == s
+
+    def test_json_fence_stripped(self):
+        s = '```json\n{"status":"created"}\n```'
+        assert discord_listener._strip_json_fence(s) == '{"status":"created"}'
+
+    def test_plain_fence_stripped(self):
+        s = '```\n{"status":"not_event"}\n```'
+        assert discord_listener._strip_json_fence(s) == '{"status":"not_event"}'
+
+    def test_fence_with_surrounding_whitespace(self):
+        s = '   ```json\n{"a":1}\n```   '
+        assert discord_listener._strip_json_fence(s) == '{"a":1}'
+
+    def test_empty_string_safe(self):
+        assert discord_listener._strip_json_fence("") == ""
