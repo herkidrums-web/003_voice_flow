@@ -168,6 +168,7 @@ per-group:
 | orchestrator | `com.swlee.voiceflow-orchestrator` | 활성 (매시 :05분) | recordings_mirror/ → Notion |
 | briefing | `com.swlee.voiceflow-briefing` | 활성 (평일 08:00) | 일일 브리핑 생성 |
 | voicememos-activator | `com.swlee.voiceflow-voicememos-activator` | 활성 | Voice Memos 앱 백그라운드 활성화 (iCloud sync 트리거) |
+| discord-listener | `com.swlee.voiceflow-discord-listener` | 활성 (24/7) | iPhone Discord 명령 수신 → VoiceFlow 실행 + 캘린더 등록 |
 
 ### 수동 실행 동선
 
@@ -180,6 +181,23 @@ shortcuts run "VoiceFlow Sync" && tail -3 /tmp/voiceflow-sync.log
 ```
 
 자연어 트리거(스킬): "음성메모 처리해줘", "/voiceflow"
+
+### Discord 캘린더 등록 (2026-05-21 추가)
+
+iPhone Discord에서 다음 중 하나로 트리거 → Google Calendar(primary)에 자동 등록:
+- 이미지 첨부(카톡 캡처 등) — 텍스트 없어도 OK
+- 메시지가 "일정 ..." / "캘린더 ..." / "calendar ..." / "/calendar ..." 로 시작
+
+처리 흐름:
+- 📅 리액션 → Claude CLI(Vision + Google Calendar MCP) → 답장
+- ✅ 등록 완료 (요약 + event_link)
+- ❓ 모호한 일시는 되묻기 → 사용자 답장 시 기존 `_handle_claude` 세션 컨텍스트로 처리
+- 🤷 일정 외 메시지는 조용히 무시
+- ⚠️ 이미지 다운로드 실패 시 사용자에 경고 후 텍스트로 처리 시도
+
+수정/삭제는 자연어 답장 ("방금 거 15시로", "삭제해줘") — 채널 세션 컨텍스트로 처리됨.
+
+소스: `scripts/discord_listener.py` 의 `_handle_calendar`.
 
 ### KeepAlive 설정 (orchestrator/briefing만)
 - `KeepAlive: {SuccessfulExit: false}` + `ThrottleInterval: 60`
