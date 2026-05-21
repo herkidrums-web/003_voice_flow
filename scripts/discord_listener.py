@@ -485,6 +485,163 @@ def _handle_claude(token: str, msg: dict, log: logging.Logger, state: dict) -> N
         _send(token, part, reply_to=msg["id"] if i == 0 else None)
 
 
+def _download_attachments(
+    attachments: list[dict], msg_id: str, log: logging.Logger,
+) -> tuple[list[Path], int]:
+    """Discord CDN URL은 인증 불필요. 이미지만 /tmp/cal_<msg_id>_<i>.<ext>로 저장.
+
+    Returns (saved_paths, failed_image_count). Non-image attachments are not counted.
+    """
+    paths: list[Path] = []
+    failed = 0
+    for i, a in enumerate(attachments or []):
+        ctype = (a.get("content_type") or "")
+        if not ctype.startswith("image/"):
+            continue
+        raw_ext = ctype.split("/", 1)[1].split(";")[0].strip()
+        ext = re.sub(r"[^a-zA-Z0-9]", "", raw_ext)[:16] or "png"
+        path = Path(f"/tmp/cal_{msg_id}_{i}.{ext}")
+        try:
+            r = requests.get(a["url"], timeout=HTTP_TIMEOUT)
+            r.raise_for_status()
+            path.write_bytes(r.content)
+            paths.append(path)
+        except Exception:
+            log.exception("attachment download failed: %s", a.get("url"))
+            failed += 1
+    return paths, failed
+
+
+def _build_calendar_prompt(content: str, image_paths: list[Path]) -> str:
+    """Calendar 핸들러 전용 prompt. JSON 한 덩어리 응답을 요구."""
+    today = date.today()
+    weekday_kr = ["월", "화", "수", "목", "금", "토", "일"][today.weekday()]
+    image_hint = ""
+    if image_paths:
+        image_hint = (
+            "\n첨부 이미지:\n"
+            + "\n".join(f"- {p}" for p in image_paths)
+            + "\nRead 도구로 이미지를 열어 텍스트(카카오톡 메시지 등)를 추출하세요."
+        )
+    body = content or "(텍스트 없음)"
+    return (
+        f"오늘은 {today.isoformat()} ({weekday_kr}). 사용자는 이성우 담당(LG U+ 기업AI고객담당).\n"
+        f"시간대는 Asia/Seoul.\n\n"
+        f"입력 메시지:\n{body}\n{image_hint}\n\n"
+        "작업:\n"
+        "1. 입력에서 일정 정보(제목, 일시, 장소, 참석자)를 추출\n"
+        "2. 일정과 무관한 잡담/광고/링크/사진이면 {\"status\":\"not_event\"} 반환\n"
+        "3. 날짜/시간이 모호('내일', '다음주 화', '점심', '저녁', '오전', '오후')\n"
+        "   → {\"status\":\"need_confirmation\",\"question\":\"...\"}\n"
+        "4. 명확하면 mcp__claude_ai_Google_Calendar__create_event 호출:\n"
+        "   - calendar_id: \"primary\"\n"
+        "   - time_zone: \"Asia/Seoul\"\n"
+        "   - 시각 정보 유무에 따른 길이:\n"
+        "     * 시각 명시 + 종료 시각 미지정 → 1시간 이벤트\n"
+        "     * 시각 정보 없이 날짜만 (예: '5/30 김유일 부장 점심') → 종일(all-day) 이벤트\n"
+        "     * '점심'/'저녁'/'오전'/'오후'만 있고 시각 모호 → need_confirmation\n"
+        "   - summary는 핵심만 (예: '코람코 김태원 대표 미팅')\n"
+        "   - description에 원문 텍스트와 참석자 정보 기록\n"
+        "   - attendees는 이메일 모르면 비움\n"
+        "5. 등록 성공 시 {\"status\":\"created\",\"event_link\":\"<htmlLink>\","
+        "\"summary\":\"<KR 한줄>\",\"event_id\":\"<id>\"}\n\n"
+        "★ 응답은 JSON 한 덩어리만. 다른 텍스트 금지.\n"
+    )
+
+
+def _handle_calendar(token: str, msg: dict, log: logging.Logger, state: dict) -> None:
+    """이미지/키워드 트리거 → Claude CLI로 일정 추출+Google Calendar 등록."""
+    content = (msg.get("content") or "").strip()
+    image_paths, download_failures = _download_attachments(
+        msg.get("attachments") or [], msg["id"], log
+    )
+    _react(token, msg["id"], "📅")
+    if download_failures:
+        _send(
+            token,
+            f"⚠️ 이미지 {download_failures}건 다운로드 실패 — 텍스트만으로 처리 시도합니다.",
+            reply_to=msg["id"],
+        )
+
+    prompt = _build_calendar_prompt(content, image_paths)
+
+    sid = state.get("claude_session_id")
+    cmd = [
+        CLAUDE_CLI, "-p",
+        "--output-format", "json",
+        "--model", CLAUDE_MODEL,
+        "--permission-mode", "bypassPermissions",
+    ]
+    if sid:
+        cmd += ["--resume", sid]
+    cmd.append(prompt)
+
+    log.info("calendar call: resume=%s images=%d content=%r",
+             sid, len(image_paths), content[:120])
+
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True,
+            timeout=CLAUDE_TIMEOUT, cwd=CLAUDE_CWD,
+        )
+    except subprocess.TimeoutExpired:
+        _send(token, f"⏱ Claude timeout ({CLAUDE_TIMEOUT}s)", reply_to=msg["id"])
+        return
+    except Exception as e:
+        log.exception("calendar subprocess failed")
+        _send(token, f"❌ Claude 호출 실패: {type(e).__name__}: {e}", reply_to=msg["id"])
+        return
+    finally:
+        for p in image_paths:
+            try:
+                p.unlink(missing_ok=True)
+            except Exception:
+                log.exception("tempfile cleanup failed: %s", p)
+
+    if result.returncode != 0:
+        tail = (result.stderr or result.stdout)[-1500:]
+        _send(token, f"❌ Claude exit={result.returncode}\n```\n{tail}\n```",
+              reply_to=msg["id"])
+        return
+
+    # Claude CLI envelope: {"result": "...", "session_id": "...", "total_cost_usd": ...}
+    try:
+        envelope = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        _send(token, f"❌ envelope JSON parse 실패\n```\n{result.stdout[-1500:]}\n```",
+              reply_to=msg["id"])
+        return
+
+    new_sid = envelope.get("session_id")
+    if new_sid:
+        state["claude_session_id"] = new_sid
+        _save_state(state)
+
+    payload_text = _strip_json_fence((envelope.get("result") or "").strip())
+    try:
+        payload = json.loads(payload_text)
+    except json.JSONDecodeError:
+        _send(token, f"❌ payload JSON parse 실패\n```\n{payload_text[:1500]}\n```",
+              reply_to=msg["id"])
+        return
+
+    status = payload.get("status")
+    log.info("calendar reply: status=%s", status)
+
+    if status == "created":
+        link = payload.get("event_link", "")
+        summary = payload.get("summary", "(요약 없음)")
+        _send(token, f"✅ 등록 완료 — {summary}\n🔗 {link}", reply_to=msg["id"])
+    elif status == "need_confirmation":
+        q = payload.get("question", "확인이 필요합니다.")
+        _send(token, f"❓ {q}", reply_to=msg["id"])
+    elif status == "not_event":
+        _react(token, msg["id"], "🤷")
+    else:
+        _send(token, f"⚠️ 알 수 없는 status: {status!r}\n```\n{payload_text[:1500]}\n```",
+              reply_to=msg["id"])
+
+
 def _handle_reset(token: str, msg: dict, log: logging.Logger, state: dict) -> None:
     """Claude 채널 세션 초기화 — 다음 메시지부터 새 대화."""
     old = state.pop("claude_session_id", None)
@@ -536,11 +693,13 @@ def main() -> int:
                          cmd, m["author"].get("username"),
                          (m.get("content") or "")[:200])
                 try:
-                    # claude/reset은 state(session_id)가 필요해 별도 디스패치
+                    # claude/reset/calendar은 state(session_id)가 필요해 별도 디스패치
                     if cmd == "claude":
                         _handle_claude(token, m, log, state)
                     elif cmd == "reset":
                         _handle_reset(token, m, log, state)
+                    elif cmd == "calendar":
+                        _handle_calendar(token, m, log, state)
                     else:
                         HANDLERS[cmd](token, m, log)
                 except Exception:
