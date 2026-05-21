@@ -585,11 +585,25 @@ def _build_calendar_prompt(content: str, image_paths: list[Path]) -> str:
         "   - summary는 핵심만 (예: '코람코 김태원 대표 미팅')\n"
         "   - description에 원문 텍스트와 참석자 정보 기록\n"
         "   - attendees는 이메일 모르면 비움\n"
-        "5. 등록 성공 시 {\"status\":\"created\",\"event_link\":\"<htmlLink>\","
-        "\"summary\":\"<KR 한줄>\",\"event_id\":\"<id>\"}\n\n"
-        "★ MCP 도구를 실제로 호출한 뒤 그 결과로만 JSON을 작성할 것. event_id·링크를 지어내지 말 것.\n"
+        "5. 등록/수정 후 시간 충돌 확인: mcp__claude_ai_Google_Calendar__list_events로\n"
+        "   해당 날짜의 기존 일정을 조회해, 새(또는 수정된) 이벤트와 시각이 겹치는\n"
+        "   '시각 있는' 이벤트를 찾는다. 종일(all-day) 이벤트는 충돌로 보지 않는다.\n"
+        "   본인이 방금 만든 이벤트는 제외한다.\n"
+        "6. 등록 성공 시 {\"status\":\"created\",\"event_link\":\"<htmlLink>\","
+        "\"summary\":\"<KR 한줄>\",\"event_id\":\"<id>\","
+        "\"conflicts\":[\"5/23 16:00-17:00 마사지 예약\", ...]}\n"
+        "   — 겹치는 일정이 없으면 conflicts는 빈 배열 [] 또는 생략.\n\n"
+        "★ MCP 도구를 실제로 호출한 뒤 그 결과로만 JSON을 작성할 것. event_id·링크·충돌을 지어내지 말 것.\n"
         "★ 응답은 JSON 한 덩어리만. 다른 텍스트 금지.\n"
     )
+
+
+def _conflict_suffix(payload: dict) -> str:
+    """payload의 conflicts 목록을 Discord 경고 줄로 변환 (없으면 빈 문자열)."""
+    conflicts = payload.get("conflicts") or []
+    if not conflicts:
+        return ""
+    return "\n⚠️ 시간 충돌: " + "; ".join(str(c) for c in conflicts)
 
 
 def _handle_calendar(token: str, msg: dict, log: logging.Logger, state: dict) -> None:
@@ -676,11 +690,13 @@ def _handle_calendar(token: str, msg: dict, log: logging.Logger, state: dict) ->
     if status == "created":
         link = payload.get("event_link", "")
         summary = payload.get("summary", "(요약 없음)")
-        _send(token, f"✅ 등록 완료 — {summary}\n🔗 {link}", reply_to=msg["id"])
+        _send(token, f"✅ 등록 완료 — {summary}\n🔗 {link}{_conflict_suffix(payload)}",
+              reply_to=msg["id"])
     elif status == "updated":
         link = payload.get("event_link", "")
         summary = payload.get("summary", "(요약 없음)")
-        _send(token, f"✅ 수정 완료 — {summary}\n🔗 {link}", reply_to=msg["id"])
+        _send(token, f"✅ 수정 완료 — {summary}\n🔗 {link}{_conflict_suffix(payload)}",
+              reply_to=msg["id"])
     elif status == "deleted":
         summary = payload.get("summary", "(요약 없음)")
         _send(token, f"🗑️ 삭제 완료 — {summary}", reply_to=msg["id"])

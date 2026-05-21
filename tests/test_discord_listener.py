@@ -152,3 +152,31 @@ class TestBuildCalendarPrompt:
                    "mcp__claude_ai_Google_Calendar__delete_event",
                    "mcp__claude_ai_Google_Calendar__list_events"):
             assert kw in prompt, f"missing keyword in prompt: {kw}"
+
+    def test_conflict_check_instructions_present(self):
+        prompt = discord_listener._build_calendar_prompt("test", [])
+        assert "conflicts" in prompt
+        assert "충돌" in prompt
+
+
+class TestConflictSuffix:
+    """payload conflicts → Discord 경고 줄."""
+
+    def test_no_conflicts_key_returns_empty(self):
+        assert discord_listener._conflict_suffix({"status": "created"}) == ""
+
+    def test_empty_conflicts_list_returns_empty(self):
+        assert discord_listener._conflict_suffix({"conflicts": []}) == ""
+
+    def test_single_conflict_formatted(self):
+        out = discord_listener._conflict_suffix(
+            {"conflicts": ["5/23 16:00-17:00 마사지 예약"]}
+        )
+        assert out == "\n⚠️ 시간 충돌: 5/23 16:00-17:00 마사지 예약"
+
+    def test_multiple_conflicts_joined(self):
+        out = discord_listener._conflict_suffix(
+            {"conflicts": ["A 일정", "B 일정"]}
+        )
+        assert "A 일정" in out and "B 일정" in out
+        assert out.startswith("\n⚠️ 시간 충돌: ")

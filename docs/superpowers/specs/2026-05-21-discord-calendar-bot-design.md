@@ -28,6 +28,7 @@
 | 모호한 시각 처리 | "저녁"/"점심"/"오후" 등 시간대만 있으면 되묻지 않고 종일 이벤트 + "(시간 미정)" 표기 |
 | 수정/삭제 인터페이스 | "캘린더 ..." 키워드로 트리거 → `_handle_calendar` 전용 세션이 검색·수정·삭제 |
 | 일정 외 메시지 | `not_event` 응답 → 🤷 리액션만, 답장 없음 |
+| 시간 충돌 | 등록/수정 후 같은 날 시각 겹치는 일정 탐지 → 등록은 그대로 진행하고 답장에 `⚠️ 시간 충돌` 표시. 종일 이벤트는 충돌로 보지 않음 |
 
 ## 3. 아키텍처
 
@@ -154,7 +155,8 @@ def _handle_calendar(token: str, msg: dict, log: logging.Logger, state: dict) ->
    - summary는 핵심만 (예: "코람코 김태원 대표 미팅")
    - description에 원문 텍스트와 참석자 정보 기록
    - attendees는 이메일 모르면 비움
-5. 등록 성공 시 {{"status":"created","event_link":"<htmlLink>","summary":"<KR 한줄>","event_id":"<id>"}}
+5. 등록/수정 후 list_events로 같은 날 시각 겹치는 일정 탐지 (종일 이벤트·본인 이벤트 제외)
+6. 등록 성공 시 {{"status":"created","event_link":"<htmlLink>","summary":"<KR 한줄>","event_id":"<id>","conflicts":["5/23 16:00-17:00 마사지 예약", ...]}}
 
 ★ 응답은 JSON 한 덩어리만. 다른 텍스트 금지.
 """
