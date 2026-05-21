@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sys
+from datetime import date
 from pathlib import Path
 
 # scripts/ 디렉터리를 path에 추가 (listener는 패키지가 아님)
@@ -103,3 +104,32 @@ class TestStripJsonFence:
 
     def test_empty_string_safe(self):
         assert discord_listener._strip_json_fence("") == ""
+
+
+class TestBuildCalendarPrompt:
+    def test_includes_today_iso(self):
+        prompt = discord_listener._build_calendar_prompt("내일 14시 미팅", [])
+        assert date.today().isoformat() in prompt
+
+    def test_includes_weekday_korean(self):
+        prompt = discord_listener._build_calendar_prompt("내일 14시 미팅", [])
+        weekday_kr = ["월", "화", "수", "목", "금", "토", "일"][date.today().weekday()]
+        assert weekday_kr in prompt
+
+    def test_includes_image_paths(self):
+        paths = [Path("/tmp/cal_x_0.png"), Path("/tmp/cal_x_1.jpg")]
+        prompt = discord_listener._build_calendar_prompt("", paths)
+        assert "/tmp/cal_x_0.png" in prompt
+        assert "/tmp/cal_x_1.jpg" in prompt
+        assert "Read 도구" in prompt
+
+    def test_empty_content_marker(self):
+        prompt = discord_listener._build_calendar_prompt("", [])
+        assert "(텍스트 없음)" in prompt
+
+    def test_required_status_keywords_present(self):
+        prompt = discord_listener._build_calendar_prompt("test", [])
+        for kw in ("not_event", "need_confirmation", "created",
+                   "mcp__claude_ai_Google_Calendar__create_event",
+                   "Asia/Seoul"):
+            assert kw in prompt, f"missing keyword in prompt: {kw}"
