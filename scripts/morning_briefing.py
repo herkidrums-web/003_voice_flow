@@ -40,6 +40,13 @@ from scripts.daily_briefing import (  # 재사용 — 이미 검증된 헬퍼
 
 log = logging.getLogger(__name__)
 
+# daily-intel 핸드오프 (페이지 생성 후 page_id 기록 — best effort, 실패해도 브리핑 정상)
+try:
+    sys.path.insert(0, "/Users/swlee/Documents/Coding/003_ai_sales_agent/daily_intel")
+    from page_id_handoff import write_page_id as _daily_intel_write_page_id
+except Exception:
+    _daily_intel_write_page_id = None
+
 WIKI_INDEX_PATH = "/Users/swlee/Documents/Coding/000_second_brain/wiki/index.md"
 DISCORD_CHANNEL_ID = "1490245243285667981"
 DISCORD_ENV = Path.home() / ".claude/channels/discord/.env"
@@ -124,20 +131,22 @@ def _category_style(anchor_path: str, is_new: bool, topic: str = "") -> tuple[st
     return ("default", "📌")
 
 
+# 순수 대인관계 정치 테마만 비공개 분리 (키맨/업무요청은 공개 — 키맨 관리 = B2B 본질)
 _INTERNAL_THEME_KEYWORDS = (
-    "조직정치", "조직 정치", "라인업", "인사 이동", "인사이동", "키맨",
-    "부문장 관계", "보고 라인", "보고라인", "관계 회복", "줄서기", "사내 정치",
+    "조직정치", "조직 정치", "줄서기", "사내 정치", "라인업",
+    "인사 이동", "인사이동", "관계 회복", "관계개선", "관계 개선",
 )
 
 
 def _is_internal_block(blk: dict) -> bool:
     """내부 정치/키맨/내부 보고 전술 토픽인지.
 
-    판정: agent가 매긴 is_internal, 또는 anchor_path가 business/internal/ 하위.
-    (방어적 이중 판정 — agent 누락 시 anchor_path로 backstop)
+    판정: agent가 is_internal을 명시했으면 그 값을 신뢰(업무요청은 false로 살림).
+    agent가 판단을 누락(None/키 없음)한 경우에만 anchor_path business/internal/로 backstop.
     """
-    if blk.get("is_internal") is True:
-        return True
+    decided = blk.get("is_internal")
+    if decided is not None:
+        return decided is True
     return "business/internal/" in (blk.get("anchor_path", "") or "").lower()
 
 
@@ -519,6 +528,11 @@ def _create_notion_page(settings, target_date: str, blocks: list[dict]) -> tuple
     )
     page_id = page["id"]
     _append_blocks(notion, page_id, blocks)
+    if _daily_intel_write_page_id is not None:
+        try:
+            _daily_intel_write_page_id(target_date, page_id, page.get("url", ""))
+        except Exception as e:
+            log.warning("daily-intel handoff write failed: %s", e)
     return page.get("url", ""), page_id
 
 
@@ -574,10 +588,33 @@ def main() -> int:
     log.info("target=%s: %d done", target_date, len(done))
 
     if not done:
-        log.info("처리된 미팅 없음 — 빈 브리핑 페이지 skip")
-        _notify("Morning Briefing", f"{target_date}: 처리된 미팅 없음")
-        if args.notify_discord:
-            _post_to_discord(f"🌅 오늘의 브리핑 ({target_date}): 처리된 미팅 없음. 건너뜁니다.")
+        # sync 상태를 먼저 확인 — stale이면 "단순 빈 브리핑"이 아니라 "동기화 사고"임을 알림
+        sync_warn = ""
+        try:
+            from scripts.run_orchestrator import _check_sync_health
+            ok, msg = _check_sync_health(Path("/tmp/voiceflow-sync.log"))
+            if not ok:
+                sync_warn = msg
+        except Exception as e:
+            log.warning("sync health check skip: %s", e)
+
+        if sync_warn:
+            log.warning("처리된 미팅 없음 + sync stale: %s", sync_warn)
+            _notify(
+                "Morning Briefing ⚠️",
+                f"{target_date}: 미팅 0건. Voice Memos 동기화 지연 ({sync_warn}). 앱 켜고 manual_run.sh 실행 필요.",
+            )
+            if args.notify_discord:
+                _post_to_discord(
+                    f"⚠️ **{target_date} 브리핑 누락** — 처리된 미팅 0건\n"
+                    f"원인 추정: Voice Memos 동기화 지연 ({sync_warn})\n"
+                    f"조치: Voice Memos 앱을 띄운 뒤 `scripts/manual_run.sh` 실행 후 브리핑 재생성"
+                )
+        else:
+            log.info("처리된 미팅 없음 (sync는 정상) — 빈 브리핑 페이지 skip")
+            _notify("Morning Briefing", f"{target_date}: 처리된 미팅 없음")
+            if args.notify_discord:
+                _post_to_discord(f"🌅 오늘의 브리핑 ({target_date}): 처리된 미팅 없음. 건너뜁니다.")
         return 0
 
     # 2. Notion에서 미팅 상세 가져오기
