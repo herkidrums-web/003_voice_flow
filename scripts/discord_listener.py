@@ -139,8 +139,12 @@ def _react(token: str, message_id: str, emoji: str) -> None:
 
 def _match_command(content: str, attachments: list[dict] | None = None) -> str | None:
     lower = content.lower().strip()
-    if not lower:
-        return None  # 빈 메시지는 스킵 (이모지/첨부 only 등)
+    has_image = any(
+        (a.get("content_type") or "").startswith("image/")
+        for a in (attachments or [])
+    )
+    if not lower and not has_image:
+        return None  # 빈 메시지 + 이미지 첨부 없음 → 스킵 (이모지/리액션 등)
     # 세션 리셋 — 우선 매칭
     if lower in ("/reset", "리셋") or lower.startswith("/reset ") or lower.startswith("리셋 "):
         return "reset"
@@ -158,6 +162,15 @@ def _match_command(content: str, attachments: list[dict] | None = None) -> str |
         return "morning_briefing"
     if any(k in content for k in ("상태", "status")):
         return "status"
+    # calendar — 이미지 첨부 OR "일정"/"캘린더" startswith
+    starts_with_keyword = (
+        lower.startswith("일정")
+        or lower.startswith("캘린더")
+        or lower.startswith("calendar")
+        or lower.startswith("/calendar")
+    )
+    if has_image or starts_with_keyword:
+        return "calendar"
     # 그 외 모든 메시지 → Claude (채널당 연속 세션)
     return "claude"
 
