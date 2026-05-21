@@ -160,6 +160,8 @@ def _match_command(content: str, attachments: list[dict] | None = None) -> str |
         return "weekly_briefing"
     if any(k in content for k in ("브리핑", "일일")) or "morning" in lower:
         return "morning_briefing"
+    if any(k in content for k in ("인텔", "외부인텔")) or "intel" in lower:
+        return "daily_intel"
     if any(k in content for k in ("상태", "status")):
         return "status"
     # calendar — 이미지 첨부 OR "일정"/"캘린더" startswith
@@ -358,6 +360,26 @@ def _handle_process_all(token: str, msg: dict, log: logging.Logger) -> None:
     except Exception as e:
         log.exception("process_all step2 failed")
         _send(token, f"❌ Step 2 실패: {type(e).__name__}: {e}")
+
+
+def _handle_daily_intel(token: str, msg: dict, log: logging.Logger) -> None:
+    """인텔/intel/외부인텔 → daily_intel manual_run.sh 비동기 실행."""
+    _react(token, msg["id"], "📡")
+    _send(
+        token,
+        "📡 daily-intel 실행 시작 (5~10분 소요, 완료 시 알림)",
+        reply_to=msg["id"],
+    )
+    try:
+        subprocess.Popen(
+            ["/Users/swlee/Documents/Coding/003_ai_sales_agent/daily_intel/scripts/manual_run.sh"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        log.info("daily_intel launched (non-blocking)")
+    except Exception as e:
+        log.exception("daily_intel launch failed")
+        _send(token, f"❌ daily-intel 실행 실패: {type(e).__name__}: {e}")
 
 
 def _handle_status(token: str, msg: dict, log: logging.Logger) -> None:
@@ -682,6 +704,7 @@ HANDLERS: dict[str, Callable] = {
     "morning_briefing": _handle_morning_briefing,
     "weekly_briefing": _handle_weekly_briefing,
     "process_all": _handle_process_all,
+    "daily_intel": _handle_daily_intel,
     "status": _handle_status,
 }
 
