@@ -73,9 +73,20 @@ class TestMatchCommandCalendar:
         atts = [{"content_type": "application/pdf", "url": "https://x/y.pdf"}]
         assert discord_listener._match_command("문서 봐줘", atts) == "claude"
 
-    def test_keyword_in_middle_does_not_trigger(self):
-        # "오늘 일정 어때?" 같은 일반 질문은 calendar로 가지 않고 claude로
+    def test_keyword_question_does_not_trigger(self):
+        # "오늘 일정 어때?" — 명사만 있고 동사 없음 → claude
         assert discord_listener._match_command("오늘 일정 어때?", None) == "claude"
+
+    def test_keyword_noun_verb_midsentence_triggers_calendar(self):
+        # "...캘린더 등록해줘" — 명사+동사가 문장 중간/끝에 와도 calendar로
+        msg = "이번주 토요일 오후6시부터 다음날 오전6시까지 빌더데이 있어 캘린더 등록해줘"
+        assert discord_listener._match_command(msg, None) == "calendar"
+
+    def test_iljeong_verb_midsentence_triggers_calendar(self):
+        assert discord_listener._match_command("이거 일정에 추가해줘", None) == "calendar"
+
+    def test_calendar_delete_midsentence_triggers_calendar(self):
+        assert discord_listener._match_command("빌더데이 캘린더에서 삭제해줘", None) == "calendar"
 
     def test_existing_commands_still_win_over_image(self):
         # 이미지 첨부 + "ping" → ping이 우선 (회귀 방지)

@@ -164,14 +164,21 @@ def _match_command(content: str, attachments: list[dict] | None = None) -> str |
         return "daily_intel"
     if any(k in content for k in ("상태", "status")):
         return "status"
-    # calendar — 이미지 첨부 OR "일정"/"캘린더" startswith
+    # calendar — 이미지 첨부 OR "일정"/"캘린더" 시작 OR (캘린더 명사 + 등록/수정 동사)
     starts_with_keyword = (
         lower.startswith("일정")
         or lower.startswith("캘린더")
         or lower.startswith("calendar")
         or lower.startswith("/calendar")
     )
-    if has_image or starts_with_keyword:
+    # 문장 중간/끝에 "캘린더 등록해줘"처럼 와도 잡도록 명사+동사 조합 매칭
+    has_cal_noun = ("캘린더" in content) or ("일정" in content)
+    has_cal_verb = any(
+        v in content
+        for v in ("등록", "추가", "잡아", "잡어", "넣어", "수정", "변경",
+                  "삭제", "지워", "지우", "옮겨", "옮기", "바꿔", "예약")
+    )
+    if has_image or starts_with_keyword or (has_cal_noun and has_cal_verb):
         return "calendar"
     # 그 외 모든 메시지 → Claude (채널당 연속 세션)
     return "claude"
@@ -570,6 +577,8 @@ def _build_calendar_prompt(content: str, image_paths: list[Path]) -> str:
         "   - time_zone: \"Asia/Seoul\"\n"
         "   - 시각 처리 규칙 (시각이 모호해도 되묻지 말 것):\n"
         "     * 정확한 시각 명시 + 종료 시각 미지정 → 1시간 이벤트\n"
+        "     * 시작·종료 시각이 모두 명시되면 그대로 사용. 종료가 시작보다 이르면\n"
+        "       다음날로 넘어가는 것으로 처리 (예: '23일 18시~24일 6시' → 12시간 이벤트)\n"
         "     * 시각 정보 없이 날짜만, 또는 '점심'/'저녁'/'오전'/'오후'처럼 시간대만 표기 →\n"
         "       종일(all-day) 이벤트로 등록. summary 끝에 '(시간 미정)' 표기하고\n"
         "       시간대 단어는 제목에 유지 (예: '김태원 대표 저녁 식사 (시간 미정)')\n"
