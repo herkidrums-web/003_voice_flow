@@ -10,6 +10,7 @@ and we'd silently skip the latest recordings.
 """
 from __future__ import annotations
 
+import fcntl
 import logging
 import os
 import re
@@ -215,6 +216,26 @@ def _clear_stale_marker() -> None:
         pass
 
 
+_ORCH_LOCK = Path("/tmp/voiceflow-orchestrator.lock")
+
+
+def _acquire_lock():
+    """Acquire an exclusive non-blocking flock; return the open handle, or None if held.
+
+    Prevents concurrent orchestrator runs — e.g. a manual_run.sh invocation
+    overlapping the hourly launchd run — which would process the same files
+    twice and create duplicate Notion pages (see 2026-05-21 incident).
+    The flock auto-releases when the handle is closed or the process exits.
+    """
+    fh = open(_ORCH_LOCK, "w")
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return fh
+    except OSError:
+        fh.close()
+        return None
+
+
 def _build_agents(settings) -> dict:
     client = ClaudeCLIClient(cli_path=settings.claude_cli_path, timeout=settings.claude_api_timeout)
     return {
@@ -297,8 +318,7 @@ def _list_pending(
     return pending
 
 
-def main() -> int:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+def _run() -> int:
     settings = get_settings()
     project_root = Path(__file__).resolve().parents[1]
 
@@ -375,6 +395,18 @@ def main() -> int:
     if not result.get("ok"):
         _notify("VoiceFlow", f"배치 일부 실패 — {result.get('reason', 'see log')}")
     return 0 if result.get("ok") else 2
+
+
+def main() -> int:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    lock_fh = _acquire_lock()
+    if lock_fh is None:
+        log.info("다른 orchestrator 실행이 lock 보유 중 — 중복 처리 방지 위해 종료")
+        return 0
+    try:
+        return _run()
+    finally:
+        lock_fh.close()
 
 
 if __name__ == "__main__":
