@@ -155,6 +155,66 @@ def _notify(title: str, message: str) -> None:
         pass
 
 
+_DISCORD_ENV_FILE = Path.home() / ".claude/channels/discord/.env"
+_DISCORD_CHANNEL_ID = "1490245243285667981"
+_DISCORD_API = "https://discord.com/api/v10"
+_STALE_MARKER = Path("/tmp/voiceflow-stale-notified.txt")
+_STALE_NOTIFY_INTERVAL_HOURS = 12
+
+
+def _load_discord_token() -> str | None:
+    """Read Discord bot token from same .env discord_listener uses. None if unreadable."""
+    try:
+        for line in _DISCORD_ENV_FILE.read_text(encoding="utf-8").splitlines():
+            if line.startswith("DISCORD_BOT_TOKEN="):
+                return line.split("=", 1)[1].strip()
+    except Exception:
+        return None
+    return None
+
+
+def _notify_discord(text: str) -> None:
+    """Best-effort Discord channel message. Never raises. Truncates to 2000 chars."""
+    token = _load_discord_token()
+    if not token:
+        return
+    try:
+        import requests
+        requests.post(
+            f"{_DISCORD_API}/channels/{_DISCORD_CHANNEL_ID}/messages",
+            headers={"Authorization": f"Bot {token}"},
+            json={"content": text[:2000]},
+            timeout=10,
+        )
+    except Exception:
+        pass
+
+
+def _should_notify_discord_stale() -> bool:
+    """Throttle stale-sync Discord pings: only every _STALE_NOTIFY_INTERVAL_HOURS."""
+    if not _STALE_MARKER.exists():
+        return True
+    try:
+        age_hours = (time.time() - _STALE_MARKER.stat().st_mtime) / 3600
+        return age_hours >= _STALE_NOTIFY_INTERVAL_HOURS
+    except Exception:
+        return True
+
+
+def _mark_stale_notified() -> None:
+    try:
+        _STALE_MARKER.write_text(time.strftime("%Y-%m-%d %H:%M:%S"), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _clear_stale_marker() -> None:
+    try:
+        _STALE_MARKER.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
 def _build_agents(settings) -> dict:
     client = ClaudeCLIClient(cli_path=settings.claude_cli_path, timeout=settings.claude_api_timeout)
     return {
@@ -247,7 +307,14 @@ def main() -> int:
     log.info("sync health: %s", msg)
     if not ok:
         _notify("VoiceFlow", f"Sync stale — Voice Memos 앱을 한번 띄워주세요. ({msg})")
+        if _should_notify_discord_stale():
+            _notify_discord(
+                f"⚠️ VoiceFlow sync stale — {msg}\n"
+                f"→ Discord에서 \"음성메모 처리해줘\" 답장하면 backlog 처리됩니다."
+            )
+            _mark_stale_notified()
         return 0
+    _clear_stale_marker()
 
     watch_dir = Path(settings.watch_dir)
     if not watch_dir.exists():
