@@ -40,13 +40,6 @@ from scripts.daily_briefing import (  # 재사용 — 이미 검증된 헬퍼
 
 log = logging.getLogger(__name__)
 
-# daily-intel 핸드오프 (페이지 생성 후 page_id 기록 — best effort, 실패해도 브리핑 정상)
-try:
-    sys.path.insert(0, "/Users/swlee/Documents/Coding/003_ai_sales_agent/daily_intel")
-    from page_id_handoff import write_page_id as _daily_intel_write_page_id
-except Exception:
-    _daily_intel_write_page_id = None
-
 WIKI_INDEX_PATH = "/Users/swlee/Documents/Coding/000_second_brain/wiki/index.md"
 DISCORD_CHANNEL_ID = "1490245243285667981"
 DISCORD_ENV = Path.home() / ".claude/channels/discord/.env"
@@ -528,11 +521,6 @@ def _create_notion_page(settings, target_date: str, blocks: list[dict]) -> tuple
     )
     page_id = page["id"]
     _append_blocks(notion, page_id, blocks)
-    if _daily_intel_write_page_id is not None:
-        try:
-            _daily_intel_write_page_id(target_date, page_id, page.get("url", ""))
-        except Exception as e:
-            log.warning("daily-intel handoff write failed: %s", e)
     return page.get("url", ""), page_id
 
 
