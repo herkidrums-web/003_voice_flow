@@ -26,11 +26,16 @@ models/
 # Voice Flow daemon
 processed.log
 processing_state.jsonl
+processing_state.jsonl.bak.*
 .stt_cache/
+.result_cache/
 *.processing
 daemon.log
 daemon-error.log
 voiceflow.log
+orchestrator.heartbeat
+discord_listener_state.json
+todos_*.json
 
 # Temp / E2E logs
 e2e_*.txt
