@@ -10,7 +10,8 @@ from unittest.mock import MagicMock, patch
 
 # scripts/ 디렉터리를 path에 추가 (listener는 패키지가 아님)
 SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "scripts"
-sys.path.insert(0, str(SCRIPTS_DIR))
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
 
 import discord_listener  # noqa: E402
 

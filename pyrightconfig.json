@@ -1,0 +1,7 @@
+{
+  "pythonVersion": "3.12",
+  "venvPath": "poc",
+  "venv": ".venv",
+  "extraPaths": [".", "scripts"],
+  "reportMissingModuleSource": "none"
+}

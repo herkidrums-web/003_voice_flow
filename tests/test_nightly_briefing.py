@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess as _subprocess_module  # noqa: F401 (Pyright extraPaths 보완용)
 import sys
 import time
 from pathlib import Path
@@ -10,7 +11,8 @@ from unittest.mock import MagicMock, patch
 
 # scripts/ 디렉터리를 path에 추가
 SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "scripts"
-sys.path.insert(0, str(SCRIPTS_DIR))
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
 
 import nightly_briefing  # noqa: E402
 
@@ -123,6 +125,8 @@ class TestNightlyStaleFallback:
 
     def test_stale_with_pending_files_attempts_drain(self, tmp_path):
         """sync stale + mirror 미처리 N건 → drain 경로 진입."""
+        import subprocess as _sp
+
         sync_log, watch_dir, state_path = self._patch_nightly(
             tmp_path, sync_log_age_h=20.0, n_pending=2
         )
@@ -133,23 +137,20 @@ class TestNightlyStaleFallback:
         orig_sync_log = nightly_briefing.SYNC_LOG
         orig_threshold = nightly_briefing.STALE_THRESHOLD_HOURS
         orig_proj_root = nightly_briefing.PROJECT_ROOT
+        orig_run_drain = nightly_briefing._run_drain
+        orig_count = nightly_briefing._count_pending_in_mirror
+        orig_notify = nightly_briefing._notify_discord
+        orig_subprocess = nightly_briefing.subprocess
 
         try:
             nightly_briefing.SYNC_LOG = sync_log
             nightly_briefing.STALE_THRESHOLD_HOURS = 12.0
             # _run_drain을 mock
-            orig_run_drain = nightly_briefing._run_drain
             nightly_briefing._run_drain = lambda: (drain_called.append(1), "ok")[1]
-
-            orig_count = nightly_briefing._count_pending_in_mirror
             nightly_briefing._count_pending_in_mirror = lambda w, s: 2
-
-            orig_notify = nightly_briefing._notify_discord
             nightly_briefing._notify_discord = lambda msg: discord_msgs.append(msg)
 
             # subprocess 호출 차단 (morning_briefing 실행 방지)
-            orig_subprocess = nightly_briefing.subprocess
-            import subprocess as _sp
             mock_result = MagicMock()
             mock_result.stdout = ""
             mock_result.stderr = ""
@@ -164,7 +165,7 @@ class TestNightlyStaleFallback:
             nightly_briefing._run_drain = orig_run_drain
             nightly_briefing._count_pending_in_mirror = orig_count
             nightly_briefing._notify_discord = orig_notify
-            nightly_briefing.subprocess = _sp
+            nightly_briefing.subprocess = orig_subprocess
 
         assert len(drain_called) >= 1, "drain이 호출돼야 한다"
         # Discord 경고 메시지에 '처리 시도' 포함 여부
@@ -173,6 +174,8 @@ class TestNightlyStaleFallback:
 
     def test_stale_no_pending_files_skips_drain(self, tmp_path):
         """sync stale + mirror 미처리 0건 → drain 스킵, 브리핑만 실행."""
+        import subprocess as _sp
+
         sync_log, watch_dir, state_path = self._patch_nightly(
             tmp_path, sync_log_age_h=20.0, n_pending=0
         )
@@ -182,21 +185,18 @@ class TestNightlyStaleFallback:
 
         orig_sync_log = nightly_briefing.SYNC_LOG
         orig_threshold = nightly_briefing.STALE_THRESHOLD_HOURS
+        orig_run_drain = nightly_briefing._run_drain
+        orig_count = nightly_briefing._count_pending_in_mirror
+        orig_notify = nightly_briefing._notify_discord
+        orig_subprocess = nightly_briefing.subprocess
 
         try:
             nightly_briefing.SYNC_LOG = sync_log
             nightly_briefing.STALE_THRESHOLD_HOURS = 12.0
-
-            orig_run_drain = nightly_briefing._run_drain
             nightly_briefing._run_drain = lambda: (drain_called.append(1), ("ok", ""))[1]
-
-            orig_count = nightly_briefing._count_pending_in_mirror
             nightly_briefing._count_pending_in_mirror = lambda w, s: 0
-
-            orig_notify = nightly_briefing._notify_discord
             nightly_briefing._notify_discord = lambda msg: discord_msgs.append(msg)
 
-            import subprocess as _sp
             mock_result = MagicMock()
             mock_result.stdout = ""
             mock_result.stderr = ""
@@ -211,7 +211,7 @@ class TestNightlyStaleFallback:
             nightly_briefing._run_drain = orig_run_drain
             nightly_briefing._count_pending_in_mirror = orig_count
             nightly_briefing._notify_discord = orig_notify
-            nightly_briefing.subprocess = _sp
+            nightly_briefing.subprocess = orig_subprocess
 
         assert len(drain_called) == 0, "미처리 0건이면 drain 호출 금지"
         # Discord 경고는 있어야 함 (stale 알림)
@@ -220,6 +220,8 @@ class TestNightlyStaleFallback:
 
     def test_mtime_restored_after_drain(self, tmp_path):
         """force drain 완료 후 sync.log mtime이 원복돼야 한다."""
+        import subprocess as _sp
+
         sync_log, watch_dir, state_path = self._patch_nightly(
             tmp_path, sync_log_age_h=20.0, n_pending=1
         )
@@ -228,8 +230,10 @@ class TestNightlyStaleFallback:
 
         orig_sync_log = nightly_briefing.SYNC_LOG
         orig_threshold = nightly_briefing.STALE_THRESHOLD_HOURS
+        orig_count = nightly_briefing._count_pending_in_mirror
+        orig_notify = nightly_briefing._notify_discord
+        orig_subprocess = nightly_briefing.subprocess
 
-        import subprocess as _sp
         mock_result = MagicMock()
         mock_result.stdout = "no pending files"
         mock_result.stderr = ""
@@ -237,11 +241,7 @@ class TestNightlyStaleFallback:
         try:
             nightly_briefing.SYNC_LOG = sync_log
             nightly_briefing.STALE_THRESHOLD_HOURS = 12.0
-
-            orig_count = nightly_briefing._count_pending_in_mirror
             nightly_briefing._count_pending_in_mirror = lambda w, s: 1
-
-            orig_notify = nightly_briefing._notify_discord
             nightly_briefing._notify_discord = lambda msg: None
 
             nightly_briefing.subprocess = MagicMock()
@@ -254,7 +254,7 @@ class TestNightlyStaleFallback:
             nightly_briefing.STALE_THRESHOLD_HOURS = orig_threshold
             nightly_briefing._count_pending_in_mirror = orig_count
             nightly_briefing._notify_discord = orig_notify
-            nightly_briefing.subprocess = _sp
+            nightly_briefing.subprocess = orig_subprocess
 
         restored_mtime = sync_log.stat().st_mtime
         # 원복 허용 오차: 1초
