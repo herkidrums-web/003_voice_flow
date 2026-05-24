@@ -44,12 +44,68 @@ POLL_INTERVAL = 30.0
 DISCORD_API = "https://discord.com/api/v10"
 HTTP_TIMEOUT = 15.0
 
+# 2026-05-23: 능동 stale 알림 — 사용자가 manual_run 까먹어도 시스템이 핑.
+SYNC_LOG = Path("/tmp/voiceflow-sync.log")
+STALE_THRESHOLD_HOURS = 12.0  # run_orchestrator와 동일
+STALE_MARKER = Path("/tmp/voiceflow-stale-notified.txt")  # run_orchestrator와 공유
+STALE_NOTIFY_INTERVAL_HOURS = 6.0  # run_orchestrator와 동일
+STALE_CHECK_INTERVAL_S = 600.0  # 10분마다 (poll 30s마다 검사는 과함)
+_last_stale_check_at = 0.0
+
 # Claude CLI 호출 설정 — 채널당 연속 세션 + bypassPermissions(모바일 작업용)
 CLAUDE_CLI = "/Users/swlee/.local/bin/claude"
 CLAUDE_CWD = "/Users/swlee/Documents/Coding"
 CLAUDE_TIMEOUT = 900  # 15분 (긴 작업 대응)
 CLAUDE_MODEL = "sonnet"  # 모바일 일상 대화용 (Opus는 결정적 순간만)
 DISCORD_MSG_LIMIT = 1900  # 2000 - 안전 여유
+MSG_SPLIT_MARKER = "[[SPLIT-MESSAGE]]"  # 한 Claude 응답을 여러 Discord 메시지로 분리
+
+
+def _check_sync_stale_and_ping(token: str, log: logging.Logger) -> None:
+    """Active stale check — run_orchestrator만 의존하면 사용자가 manual_run을 안 돌릴 때
+    매시 :05분에만 검사된다. listener는 24/7 살아있으니 여기서도 보조 감시.
+
+    sync.log mtime이 STALE_THRESHOLD_HOURS 초과 + STALE_NOTIFY_INTERVAL_HOURS
+    throttle 통과 시 Discord 채널에 능동 ping. 마커는 run_orchestrator와 공유라
+    중복 알림 없음.
+    """
+    global _last_stale_check_at
+    now = time.monotonic()
+    if now - _last_stale_check_at < STALE_CHECK_INTERVAL_S:
+        return
+    _last_stale_check_at = now
+
+    try:
+        if not SYNC_LOG.exists():
+            return
+        age_hours = (time.time() - SYNC_LOG.stat().st_mtime) / 3600
+        if age_hours <= STALE_THRESHOLD_HOURS:
+            # fresh — 마커 클리어는 run_orchestrator._clear_stale_marker() 단독 담당.
+            # listener에서 중복 클리어하면 throttle 리셋 버그 발생(2026-05-24 수정).
+            return
+
+        # stale — throttle 확인
+        if STALE_MARKER.exists():
+            try:
+                marker_age = (time.time() - STALE_MARKER.stat().st_mtime) / 3600
+                if marker_age < STALE_NOTIFY_INTERVAL_HOURS:
+                    return  # 최근 알림 발사함 — 스킵
+            except Exception:
+                pass
+
+        # ping
+        msg = (
+            f"⏰ VoiceFlow stale ({age_hours:.1f}h) — `음성메모 처리해줘` 라고 답장하면 처리됩니다.\n"
+            f"(Mac 직접 실행: bash /Users/swlee/Documents/Coding/002_voice_flow_v3/scripts/manual_run.sh)"
+        )
+        try:
+            _send(token, msg)
+            STALE_MARKER.write_text(time.strftime("%Y-%m-%d %H:%M:%S"), encoding="utf-8")
+            log.info("stale ping 발사 — age=%.1fh", age_hours)
+        except Exception:
+            log.exception("stale ping 실패")
+    except Exception:
+        log.exception("stale check error")
 
 
 def _load_token() -> str:
@@ -99,7 +155,7 @@ def _save_state(state: dict) -> None:
 
 def _fetch_messages(token: str, after: str | None) -> list[dict]:
     url = f"{DISCORD_API}/channels/{CHANNEL_ID}/messages"
-    params = {"limit": 20}
+    params: dict[str, str | int] = {"limit": 20}
     if after:
         params["after"] = after
     r = requests.get(
@@ -455,14 +511,25 @@ def _chunks(text: str, size: int) -> list[str]:
     return out
 
 
+def _is_golf_sms(content: str) -> bool:
+    """골프 부킹 확정 문자 추정. 골프 문자는 매번 새 세션(--resume 없이)으로
+    처리해, 스킬을 수정해도 옛 세션 동작이 굳지 않고 항상 최신 스킬을 읽게 한다."""
+    if "예약" not in content:
+        return False
+    return any(k in content for k in
+               ("코스", "XGOLF", "컨트리클럽", "티업", "티오프", "CC"))
+
+
 def _handle_claude(token: str, msg: dict, log: logging.Logger, state: dict) -> None:
-    """비명령 메시지 → Claude CLI 호출. 채널당 연속 세션(--resume) 유지."""
+    """비명령 메시지 → Claude CLI 호출. 채널당 연속 세션(--resume) 유지.
+    단 골프 부킹 문자는 새 세션으로 처리(최신 스킬 보장)."""
     content = (msg.get("content") or "").strip()
     if not content:
         return
     _react(token, msg["id"], "🤔")
 
-    sid = state.get("claude_session_id")
+    golf = _is_golf_sms(content)
+    sid = None if golf else state.get("claude_session_id")
     cmd = [
         CLAUDE_CLI, "-p",
         "--output-format", "json",
@@ -502,14 +569,21 @@ def _handle_claude(token: str, msg: dict, log: logging.Logger, state: dict) -> N
 
     text = (j.get("result") or "").strip() or "(빈 응답)"
     new_sid = j.get("session_id")
-    if new_sid:
+    if new_sid and not golf:
+        # 골프 문자는 무상태 1회성 — 대화 세션을 오염시키지 않는다
         state["claude_session_id"] = new_sid
         _save_state(state)
     cost = j.get("total_cost_usd")
     log.info("claude reply: session=%s cost=%s len=%d",
              new_sid, cost, len(text))
 
-    parts = _chunks(text, DISCORD_MSG_LIMIT)
+    # 응답에 MSG_SPLIT_MARKER가 있으면 그 지점에서 별도 Discord 메시지로 분리.
+    # (골프 스킬이 캘린더 결과 / 고객 안내 문자를 따로 보낼 때 사용)
+    # 마커가 없으면 segments == [text] 라 기존 동작과 동일하다.
+    segments = [s.strip() for s in text.split(MSG_SPLIT_MARKER) if s.strip()]
+    parts: list[str] = []
+    for seg in segments:
+        parts.extend(_chunks(seg, DISCORD_MSG_LIMIT))
     for i, part in enumerate(parts):
         _send(token, part, reply_to=msg["id"] if i == 0 else None)
 
@@ -784,6 +858,13 @@ def main() -> int:
                       e.response.text[:200] if e.response else str(e))
         except Exception:
             log.exception("poll loop error")
+
+        # 능동 stale 감시 (10분마다 내부 throttle)
+        try:
+            _check_sync_stale_and_ping(token, log)
+        except Exception:
+            log.exception("stale check raised")
+
         time.sleep(POLL_INTERVAL)
 
 
