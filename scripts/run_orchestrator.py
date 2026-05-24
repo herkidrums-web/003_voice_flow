@@ -71,18 +71,21 @@ def _mirror_fallback_sync(watch_dir: Path) -> int:
     return copied
 
 
-def _check_sync_health(sync_log: Path, max_age_hours: int = 24) -> tuple[bool, str]:
+def _check_sync_health(sync_log: Path, max_age_hours: float = 12.0) -> tuple[bool, str]:
     """Inspect sync.log mtime to verify the bash sync daemon is alive.
 
     Returns (ok, message). When ok=False, run_orchestrator() exits cleanly
     (does NOT raise) — a stale sync is a Voice-Memos-app-not-running issue,
     not a code bug.
+
+    2026-05-23: 24h → 12h. 반수동 정책상 사용자가 하루 1회 manual_run을 까먹으면
+    바로 누락 누적. 12h로 단축하면 아침 누락(전날 저녁 녹음)을 그날 안에 감지.
     """
     if not sync_log.exists():
         return False, f"sync.log not found at {sync_log}"
     age_hours = (time.time() - sync_log.stat().st_mtime) / 3600
     if age_hours > max_age_hours:
-        return False, f"sync.log stale ({age_hours:.1f}h since last update; threshold {max_age_hours}h)"
+        return False, f"sync.log stale ({age_hours:.1f}h since last update; threshold {max_age_hours:.0f}h)"
     return True, f"sync.log fresh ({age_hours:.1f}h)"
 
 
@@ -160,7 +163,9 @@ _DISCORD_ENV_FILE = Path.home() / ".claude/channels/discord/.env"
 _DISCORD_CHANNEL_ID = "1490245243285667981"
 _DISCORD_API = "https://discord.com/api/v10"
 _STALE_MARKER = Path("/tmp/voiceflow-stale-notified.txt")
-_STALE_NOTIFY_INTERVAL_HOURS = 12
+# 2026-05-23: 12h → 6h. stale 임계치 자체를 12h로 줄였으므로 알림 간격도 줄여
+# 같은 stale 상태가 24h 지속되면 알림이 2~3회 가도록 함 (사용자 실행 유도).
+_STALE_NOTIFY_INTERVAL_HOURS = 6
 
 
 def _load_discord_token() -> str | None:
@@ -328,9 +333,10 @@ def _run() -> int:
     if not ok:
         _notify("VoiceFlow", f"Sync stale — Voice Memos 앱을 한번 띄워주세요. ({msg})")
         if _should_notify_discord_stale():
+            age_h = (time.time() - sync_log.stat().st_mtime) / 3600
             _notify_discord(
-                f"⚠️ VoiceFlow sync stale — {msg}\n"
-                f"→ Discord에서 \"음성메모 처리해줘\" 답장하면 backlog 처리됩니다."
+                f"⏰ VoiceFlow stale ({age_h:.1f}h) — `음성메모 처리해줘` 라고 답장하면 처리됩니다.\n"
+                f"(Mac 직접 실행: bash /Users/swlee/Documents/Coding/002_voice_flow_v3/scripts/manual_run.sh)"
             )
             _mark_stale_notified()
         return 0
