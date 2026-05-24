@@ -1,0 +1,22 @@
+{
+  "name": "voiceflow",
+  "description": "VoiceFlow v3 — Apple Watch/iPhone 음성메모 STT 파이프라인 + Wiki anchor 기반 일일 브리핑 + Discord 양방향 컨트롤. 음성 → 멀티에이전트 분석 → Notion 자동화, 매일 07:00 자동 브리핑.",
+  "version": "1.0.0",
+  "author": {
+    "name": "이성우 (Lee Seongwoo)",
+    "email": "herkidrums@gmail.com"
+  },
+  "license": "MIT",
+  "keywords": [
+    "voice-memo",
+    "stt",
+    "whisper",
+    "notion",
+    "discord-listener",
+    "daily-briefing",
+    "wiki-ontology",
+    "multi-agent",
+    "claude-cli",
+    "korean"
+  ]
+}

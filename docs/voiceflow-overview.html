@@ -1,0 +1,412 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>VoiceFlow — 음성메모 자동 정리 에이전트</title>
+<style>
+  :root{
+    --bg:#f7f6f3;
+    --ink:#1a1a1a;
+    --ink-2:#3c3c3c;
+    --muted:#7a7670;
+    --line:#e3e0d8;
+    --card:#ffffff;
+    --accent:#b34a2e;
+    --accent-soft:#fbeee8;
+    --blue:#2a5687;
+    --green:#3e6b3a;
+    --yellow:#a87d10;
+    --code:'JetBrains Mono','SF Mono',ui-monospace,Menlo,monospace;
+    --serif:'Apple SD Gothic Neo','Noto Serif KR',ui-serif,Georgia,serif;
+    --sans:-apple-system,BlinkMacSystemFont,'Pretendard','Apple SD Gothic Neo',sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{
+    background:var(--bg);
+    color:var(--ink);
+    font-family:var(--sans);
+    font-size:15.5px;
+    line-height:1.65;
+    -webkit-font-smoothing:antialiased;
+    letter-spacing:-0.005em;
+  }
+  .wrap{max-width:1180px;margin:0 auto;padding:64px 40px 96px}
+
+  /* Hero */
+  .hero{border-bottom:1px solid var(--line);padding-bottom:36px;margin-bottom:48px}
+  .eyebrow{
+    font-family:var(--code);font-size:11.5px;letter-spacing:0.14em;
+    text-transform:uppercase;color:var(--muted);margin-bottom:14px
+  }
+  h1{
+    font-family:var(--serif);font-weight:600;font-size:46px;line-height:1.15;
+    margin:0 0 16px;letter-spacing:-0.015em
+  }
+  .lede{font-size:18px;color:var(--ink-2);max-width:780px;margin:0}
+  .lede b{font-weight:600;color:var(--ink)}
+
+  .meta{display:flex;gap:32px;margin-top:28px;flex-wrap:wrap}
+  .meta-item{font-size:13px;color:var(--muted)}
+  .meta-item b{display:block;color:var(--ink);font-size:22px;font-weight:600;margin-top:2px;font-family:var(--serif)}
+
+  /* Section */
+  section{margin-top:72px}
+  h2{
+    font-family:var(--serif);font-weight:600;font-size:28px;
+    margin:0 0 8px;letter-spacing:-0.01em
+  }
+  .sub{color:var(--muted);font-size:14px;margin:0 0 28px}
+
+  /* Pipeline strip */
+  .pipe{
+    display:grid;grid-template-columns:1fr auto 1fr auto 1fr;align-items:stretch;
+    gap:0;background:var(--card);border:1px solid var(--line);border-radius:10px;overflow:hidden
+  }
+  .pipe .col{padding:24px 26px}
+  .pipe .col + .arrow{display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:22px;padding:0 4px}
+  .pipe h4{margin:0 0 6px;font-size:13px;color:var(--muted);font-weight:600;letter-spacing:0.04em;text-transform:uppercase}
+  .pipe p{margin:0;font-size:14.5px;color:var(--ink-2)}
+  .pipe code{font-family:var(--code);font-size:12.5px;background:#f0eee8;padding:2px 6px;border-radius:4px;color:var(--ink)}
+
+  /* Agent grid */
+  .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+  .card{
+    background:var(--card);border:1px solid var(--line);border-radius:10px;
+    padding:20px 22px;display:flex;flex-direction:column;gap:8px;
+    transition:border-color .15s
+  }
+  .card:hover{border-color:#cfcabf}
+  .card .tag{
+    font-family:var(--code);font-size:10.5px;letter-spacing:0.1em;
+    color:var(--muted);text-transform:uppercase
+  }
+  .card h3{margin:0;font-size:17px;font-weight:600;font-family:var(--serif);letter-spacing:-0.005em}
+  .card p{margin:0;color:var(--ink-2);font-size:14px}
+  .card .model{
+    font-family:var(--code);font-size:11.5px;color:var(--muted);
+    border-top:1px solid var(--line);padding-top:10px;margin-top:6px
+  }
+  .card .model b{color:var(--ink-2);font-weight:600}
+
+  /* Orchestrator highlight */
+  .card.orch{background:#1a1a1a;color:#f5f3ee;border-color:#1a1a1a;grid-column:span 3}
+  .card.orch h3{color:#f5f3ee}
+  .card.orch p{color:#cfc9bd;font-size:15px}
+  .card.orch .tag{color:#a09a8d}
+  .card.orch .model{color:#a09a8d;border-top-color:#3a3835}
+  .card.orch .model b{color:#cfc9bd}
+  .card.orch .stages{
+    font-family:var(--code);font-size:11.5px;color:#cfc9bd;
+    background:#262522;padding:10px 12px;border-radius:6px;margin-top:4px;
+    line-height:1.7;overflow-x:auto;white-space:nowrap
+  }
+  .card.orch .stages b{color:#fff}
+
+  /* Self-heal */
+  .heal{
+    background:var(--card);border:1px solid var(--line);border-radius:10px;
+    padding:28px 32px;display:grid;grid-template-columns:1fr 1.4fr;gap:32px;align-items:center
+  }
+  .heal h3{font-family:var(--serif);font-size:22px;margin:0 0 8px;font-weight:600}
+  .heal p{margin:0 0 8px;color:var(--ink-2);font-size:14.5px}
+  .heal .flow{
+    display:flex;flex-direction:column;gap:10px;font-family:var(--code);font-size:13px
+  }
+  .heal .step{
+    display:flex;align-items:center;gap:12px;padding:10px 14px;
+    background:#f7f6f3;border-radius:6px;border:1px solid var(--line)
+  }
+  .heal .step .n{
+    width:22px;height:22px;border-radius:50%;background:#1a1a1a;color:#fff;
+    display:flex;align-items:center;justify-content:center;font-size:11px;flex-shrink:0
+  }
+  .heal .step.fail{background:#fbeee8;border-color:#e9c8bc}
+  .heal .step.heal-bg{background:#fdf5e7;border-color:#e9d4a3}
+  .heal .step.ok{background:#edf3ec;border-color:#c5d7c2}
+
+  /* Output */
+  .output{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  .out{
+    background:var(--card);border:1px solid var(--line);border-radius:10px;padding:24px 26px
+  }
+  .out h3{margin:0 0 6px;font-family:var(--serif);font-size:20px;font-weight:600}
+  .out p.sub2{margin:0 0 16px;color:var(--muted);font-size:13px}
+  .out ul{margin:0;padding-left:18px;color:var(--ink-2);font-size:14.5px}
+  .out ul li{margin-bottom:6px}
+  .out .schedule{
+    font-family:var(--code);font-size:12.5px;color:var(--muted);
+    margin-top:14px;padding-top:14px;border-top:1px solid var(--line)
+  }
+
+  /* Stats */
+  .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:16px}
+  .stat{
+    background:var(--card);border:1px solid var(--line);border-radius:10px;
+    padding:22px 24px
+  }
+  .stat .n{font-family:var(--serif);font-size:34px;font-weight:600;letter-spacing:-0.02em;margin:0}
+  .stat .l{font-size:12.5px;color:var(--muted);margin:2px 0 0;text-transform:uppercase;letter-spacing:0.06em}
+
+  /* Footnote */
+  .foot{margin-top:64px;padding-top:24px;border-top:1px solid var(--line);font-size:12.5px;color:var(--muted);font-family:var(--code)}
+
+  @media (max-width:880px){
+    .wrap{padding:40px 22px}
+    h1{font-size:34px}
+    .pipe{grid-template-columns:1fr}
+    .pipe .arrow{display:none !important}
+    .pipe .col{border-bottom:1px solid var(--line)}
+    .grid{grid-template-columns:1fr}
+    .card.orch{grid-column:span 1}
+    .heal{grid-template-columns:1fr}
+    .output{grid-template-columns:1fr}
+    .stats{grid-template-columns:repeat(2,1fr)}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- HERO -->
+  <header class="hero">
+    <div class="eyebrow">VoiceFlow v3 · 멀티 에이전트 파이프라인</div>
+    <h1>음성메모를 미팅노트와 다음날 To-Do로<br/>자동 변환하는 13개 에이전트</h1>
+    <p class="lede">
+      Apple Watch / iPhone 음성메모를 Mac에 동기화하고, <b>Orchestrator + 12개 서브에이전트</b>가 순차적으로
+      STT → 분석 → 검증 → 분류 → Notion 작성을 처리. 검증 실패 시 <b>Self-Heal 루프</b>로 최대 5회 자가 재시도하며,
+      매 영업일 아침 <b>일일 브리핑</b>으로 결과를 한 페이지에 모은다.
+    </p>
+    <div class="meta">
+      <div class="meta-item">에이전트<b>13</b></div>
+      <div class="meta-item">파이프라인 Stage<b>9</b></div>
+      <div class="meta-item">Self-Heal 재시도<b>최대 5회</b></div>
+      <div class="meta-item">회귀 테스트<b>143개 통과</b></div>
+      <div class="meta-item">트리거<b>manual_run.sh / 매시 / 매일 07:00</b></div>
+    </div>
+  </header>
+
+  <!-- 전체 흐름 -->
+  <section>
+    <h2>전체 흐름</h2>
+    <p class="sub">입력 — 처리 — 출력 3단 구조. 음성에서 Notion까지 사람 개입 없이 진행됨.</p>
+
+    <div class="pipe">
+      <div class="col">
+        <h4>입력</h4>
+        <p>Apple Watch / iPhone 음성메모 → iCloud → Mac <code>recordings_mirror/</code></p>
+      </div>
+      <div class="arrow">→</div>
+      <div class="col">
+        <h4>처리 (13 에이전트)</h4>
+        <p>Orchestrator가 12개 서브에이전트를 Stage 순서로 호출. Stage 단위로 상태 저장 → 재개 가능.</p>
+      </div>
+      <div class="arrow">→</div>
+      <div class="col">
+        <h4>출력</h4>
+        <p>Notion 미팅노트 · Wiki 링크 · 일일/주간 브리핑 · 다음날 To-Do</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 에이전트 13개 -->
+  <section>
+    <h2>13개 에이전트 구성</h2>
+    <p class="sub">상단 Orchestrator가 12개 서브에이전트를 호출. 각 에이전트는 단일 책임(STT, NER, 분석 등)을 맡는다.</p>
+
+    <div class="grid">
+
+      <div class="card orch">
+        <span class="tag">01 · 조율</span>
+        <h3>Orchestrator</h3>
+        <p>Stage 순서로 12개 서브에이전트를 호출. 각 Stage 완료 시 상태를 저장하여 실패 지점에서 재개. Self-Heal 루프 진입/탈출도 여기서 제어.</p>
+        <div class="stages">Stage : <b>NONE → STT → NER → DICTIONARY → GROUPING → ANALYSIS → VALIDATION → CLASSIFICATION → NOTION → WIKI</b></div>
+        <div class="model"><b>제어</b> : 상태머신 / 재시도 / 자동 archive(같은 파일 재처리 시 이전 페이지 보관)</div>
+      </div>
+
+      <div class="card">
+        <span class="tag">02 · 음성→텍스트</span>
+        <h3>STT Agent</h3>
+        <p>mlx-whisper로 한국어 전사. SHA256 캐시로 같은 파일 재처리 비용 차단.</p>
+        <div class="model"><b>엔진</b> : mlx-whisper (Apple Silicon)</div>
+      </div>
+
+      <div class="card">
+        <span class="tag">03 · 고유명사</span>
+        <h3>NER Agent</h3>
+        <p>전사문에서 신규 인명/회사명/업계 약어를 추출. 사전에 이미 등록된 항목은 제외.</p>
+        <div class="model"><b>모델</b> : Claude (CLI subprocess)</div>
+      </div>
+
+      <div class="card">
+        <span class="tag">04 · 사전 교정</span>
+        <h3>Dictionary Agent</h3>
+        <p><code>custom_terms.txt</code>로 전사 교정 후 신규 항목을 사전에 추가. "원혁명→권용현 부사장" 같은 STT 오인식 보정.</p>
+        <div class="model"><b>저장</b> : custom_terms.txt</div>
+      </div>
+
+      <div class="card">
+        <span class="tag">05 · 세션 분리</span>
+        <h3>Grouping Agent</h3>
+        <p>한 파일에 여러 회의가 섞여 있으면 내용 유사성으로 분리. 같은 주제는 한 페이지, 다른 주제는 별도 페이지.</p>
+        <div class="model"><b>모델</b> : Claude</div>
+      </div>
+
+      <div class="card">
+        <span class="tag">06 · 핵심 분석</span>
+        <h3>Analysis Agent</h3>
+        <p>토픽별 5W1H · 핵심 사실 · 결정사항 · 액션 아이템 추출. 분석 품질이 보고서 품질을 결정.</p>
+        <div class="model"><b>모델</b> : Claude Opus</div>
+      </div>
+
+      <div class="card">
+        <span class="tag">07 · 검증</span>
+        <h3>Validation Agent</h3>
+        <p>분석 결과의 구조와 비즈니스 규칙을 점검. 누락·할루시네이션·길이 폭증을 차단.</p>
+        <div class="model"><b>판정</b> : 통과 / 실패 → Self-Heal 진입</div>
+      </div>
+
+      <div class="card">
+        <span class="tag">08 · 자가 치유</span>
+        <h3>Self-Heal Agent</h3>
+        <p>Validation 실패 시 실패 항목을 분석하여 파라미터를 조정하고 Analysis 재실행을 지시. 최대 5회.</p>
+        <div class="model"><b>한도</b> : 5회 → 미해결 시 수동 알림</div>
+      </div>
+
+      <div class="card">
+        <span class="tag">09 · 분류</span>
+        <h3>Classification Agent</h3>
+        <p>프로젝트 / 회의 유형 / 중요도 / 내부·외부 태깅. 외부 고객 실참 → 외부, 직원끼리 외부 얘기만 → 내부.</p>
+        <div class="model"><b>모델</b> : Claude Haiku</div>
+      </div>
+
+      <div class="card">
+        <span class="tag">10 · Notion 작성</span>
+        <h3>Notion Agent</h3>
+        <p>v3 페이지 양식으로 미팅노트 생성 — 회의개요 표 · 파란 콜아웃 요약 · 빨강 To-Do · 토글 논의 · 노랑 리스크.</p>
+        <div class="model"><b>API</b> : Notion 2025-09-03 (data_sources)</div>
+      </div>
+
+      <div class="card">
+        <span class="tag">11 · Wiki 반영</span>
+        <h3>Wiki Agent</h3>
+        <p>생성된 Notion 링크를 세컨드 브레인 Wiki 인덱스에 자동 추가. 토픽 anchor로 후속 검색·브리핑이 가능해짐.</p>
+        <div class="model"><b>대상</b> : 000_second_brain/wiki/</div>
+      </div>
+
+      <div class="card">
+        <span class="tag">12 · 다음날 To-Do</span>
+        <h3>Todo Agent</h3>
+        <p>당일 미팅의 액션 아이템들을 프로젝트별로 묶어 다음날 To-Do로 정리.</p>
+        <div class="model"><b>출력</b> : todos_YYYY-MM-DD.json</div>
+      </div>
+
+      <div class="card">
+        <span class="tag">13 · 일일/주간 브리핑</span>
+        <h3>Briefing Agent</h3>
+        <p>Wiki anchor 기준으로 토픽 그룹핑 → 이성우 담당 To-Do 분리 → Notion 일일 브리핑 페이지 생성. Weekly는 한 주 흐름(시작→진행→결과) 합성.</p>
+        <div class="model"><b>스케줄</b> : 평일 07:00 (일일) / 주간 (주말)</div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- Self-Heal 루프 -->
+  <section>
+    <h2>Self-Heal 자가 치유 루프</h2>
+    <p class="sub">분석 결과가 검증을 통과하지 못하면 사람을 부르지 않고 스스로 재시도한다.</p>
+
+    <div class="heal">
+      <div>
+        <h3>실패 → 진단 → 재실행</h3>
+        <p>Validation Agent가 실패 항목을 구체적으로 지목하면, Self-Heal Agent가 그 실패에 맞게 Analysis 파라미터를 바꿔서 다시 호출한다.</p>
+        <p>최대 5회까지 시도하고, 그래도 통과 못 하면 사람에게 알린다. 평균적으로는 1~2회 안에 통과.</p>
+      </div>
+      <div class="flow">
+        <div class="step"><div class="n">1</div><div>Analysis Agent — 1차 분석 결과 생성</div></div>
+        <div class="step fail"><div class="n">2</div><div>Validation Agent — 구조·규칙 실패 항목 지목</div></div>
+        <div class="step heal-bg"><div class="n">3</div><div>Self-Heal Agent — 실패 항목 기반 파라미터 재조정</div></div>
+        <div class="step"><div class="n">4</div><div>Analysis Agent — 재실행 (최대 5회)</div></div>
+        <div class="step ok"><div class="n">5</div><div>Validation 통과 → Classification 단계로 진행</div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 출력물 -->
+  <section>
+    <h2>출력물</h2>
+    <p class="sub">한 번의 실행으로 4가지 산출물이 동시에 생성됨.</p>
+
+    <div class="output">
+      <div class="out">
+        <h3>Notion 미팅노트</h3>
+        <p class="sub2">매 미팅 1페이지. v3 양식 고정.</p>
+        <ul>
+          <li>회의 개요 (네이티브 table)</li>
+          <li>핵심 요약 (파란 콜아웃)</li>
+          <li>To-Do / 담당자 / 기한 (빨강 헤딩 + 체크박스)</li>
+          <li>주요 논의 (토글 + "쉽게 말하면" 한 줄)</li>
+          <li>결정사항 · 시사점 · 리스크 (노랑 헤딩)</li>
+          <li>원문 전사본 (토글)</li>
+        </ul>
+        <div class="schedule">트리거 · manual_run.sh / hourly orchestrator</div>
+      </div>
+      <div class="out">
+        <h3>일일 브리핑</h3>
+        <p class="sub2">하루치 미팅을 한 페이지로.</p>
+        <ul>
+          <li>Wiki anchor 기준 토픽 그룹핑</li>
+          <li>이성우 담당 To-Do 분리 섹션</li>
+          <li>전날 미팅 요약 · 결정 · 액션 정리</li>
+          <li>Notion 일일 브리핑 DB에 자동 저장</li>
+        </ul>
+        <div class="schedule">스케줄 · 평일 07:00 (launchd)</div>
+      </div>
+      <div class="out">
+        <h3>주간 브리핑</h3>
+        <p class="sub2">한 주의 흐름을 토픽별로 합성.</p>
+        <ul>
+          <li>토픽별 시작 → 진행 → 결과 합성</li>
+          <li>지난 주 추가/수정 Wiki 노트 스캔</li>
+          <li>지식 격차 · 다음 주 방향 제안</li>
+        </ul>
+        <div class="schedule">스케줄 · 주간 (Weekly)</div>
+      </div>
+      <div class="out">
+        <h3>Wiki 자동 반영</h3>
+        <p class="sub2">세컨드 브레인 인덱스에 누적.</p>
+        <ul>
+          <li>생성된 Notion 링크를 wiki/index.md에 추가</li>
+          <li>토픽 anchor로 후속 /query · /briefing이 검색 가능</li>
+          <li>중복·고아 노트는 /lint로 별도 점검</li>
+        </ul>
+        <div class="schedule">대상 · 000_second_brain/wiki/</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 운영 지표 -->
+  <section>
+    <h2>운영 구조</h2>
+    <p class="sub">설계 의도와 실제 운영 형태를 숫자로 정리.</p>
+
+    <div class="stats">
+      <div class="stat"><p class="n">13</p><p class="l">에이전트 (Orchestrator + 12)</p></div>
+      <div class="stat"><p class="n">9</p><p class="l">Stage (재개 가능)</p></div>
+      <div class="stat"><p class="n">5회</p><p class="l">Self-Heal 한도</p></div>
+      <div class="stat"><p class="n">143</p><p class="l">회귀 테스트 통과</p></div>
+      <div class="stat"><p class="n">FDA</p><p class="l">bash sync 미러 아키텍처</p></div>
+      <div class="stat"><p class="n">CLI</p><p class="l">Claude 호출 (SDK 직접 호출 없음)</p></div>
+      <div class="stat"><p class="n">07:00</p><p class="l">평일 브리핑 launchd</p></div>
+      <div class="stat"><p class="n">manual</p><p class="l">trigger : manual_run.sh</p></div>
+    </div>
+  </section>
+
+  <p class="foot">
+    /Users/swlee/Documents/Coding/002_voice_flow_v3 · feat/v3-multiagent · 13 agents · Claude CLI subprocess (no API key)
+  </p>
+
+</div>
+</body>
+</html>
