@@ -13,7 +13,7 @@ SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "scripts"
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
-import discord_listener  # noqa: E402
+import discord_listener  # noqa: E402  # type: ignore[import-not-found]
 
 
 class TestMatchCommandRegression:
