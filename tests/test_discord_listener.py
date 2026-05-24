@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import sys
+import time
+import unittest.mock as mock
 from datetime import date
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 # scripts/ 디렉터리를 path에 추가 (listener는 패키지가 아님)
 SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "scripts"
@@ -180,3 +183,127 @@ class TestConflictSuffix:
         )
         assert "A 일정" in out and "B 일정" in out
         assert out.startswith("\n⚠️ 시간 충돌: ")
+
+
+class TestSyncStaleThrottleFix:
+    """단계 1·2 수정 검증 — fresh 전환 시 마커 보존 & throttle 준수."""
+
+    def test_stale_check_fresh_does_not_clear_marker(self, tmp_path):
+        """fresh 분기 진입 시 STALE_MARKER를 삭제하지 않아야 한다 (throttle 버그 수정)."""
+        # 준비: sync.log fresh + STALE_MARKER 존재
+        sync_log = tmp_path / "voiceflow-sync.log"
+        sync_log.write_text("ok", encoding="utf-8")
+        # mtime = 현재 (fresh)
+        now = time.time()
+        import os
+        os.utime(sync_log, (now, now))
+
+        stale_marker = tmp_path / "voiceflow-stale-notified.txt"
+        stale_marker.write_text("2026-05-24 01:00:00", encoding="utf-8")
+
+        log_mock = MagicMock()
+
+        # 원본 상수를 임시로 교체
+        orig_sync_log = discord_listener.SYNC_LOG
+        orig_marker = discord_listener.STALE_MARKER
+        orig_threshold = discord_listener.STALE_THRESHOLD_HOURS
+        orig_last = discord_listener._last_stale_check_at
+        try:
+            discord_listener.SYNC_LOG = sync_log
+            discord_listener.STALE_MARKER = stale_marker
+            discord_listener.STALE_THRESHOLD_HOURS = 12.0
+            discord_listener._last_stale_check_at = 0.0  # force check
+
+            discord_listener._check_sync_stale_and_ping("fake_token", log_mock)
+        finally:
+            discord_listener.SYNC_LOG = orig_sync_log
+            discord_listener.STALE_MARKER = orig_marker
+            discord_listener.STALE_THRESHOLD_HOURS = orig_threshold
+            discord_listener._last_stale_check_at = orig_last
+
+        # 마커가 그대로 존재해야 함 (삭제 안 됨)
+        assert stale_marker.exists(), "fresh 분기에서 STALE_MARKER를 삭제하면 안 된다"
+
+    def test_stale_check_throttle_respected(self, tmp_path):
+        """마커 age < STALE_NOTIFY_INTERVAL_HOURS이면 Discord ping을 발사하지 않는다."""
+        import os
+
+        # sync.log stale (mtime = 24h 전)
+        sync_log = tmp_path / "voiceflow-sync.log"
+        sync_log.write_text("old", encoding="utf-8")
+        stale_mtime = time.time() - 24 * 3600
+        os.utime(sync_log, (stale_mtime, stale_mtime))
+
+        # 마커 = 방금 생성 (age ≈ 0h < 6h)
+        stale_marker = tmp_path / "voiceflow-stale-notified.txt"
+        stale_marker.write_text("recent", encoding="utf-8")
+        recent_mtime = time.time()
+        os.utime(stale_marker, (recent_mtime, recent_mtime))
+
+        log_mock = MagicMock()
+        sent_calls = []
+
+        orig_sync_log = discord_listener.SYNC_LOG
+        orig_marker = discord_listener.STALE_MARKER
+        orig_threshold = discord_listener.STALE_THRESHOLD_HOURS
+        orig_notify = discord_listener.STALE_NOTIFY_INTERVAL_HOURS
+        orig_last = discord_listener._last_stale_check_at
+        orig_send = discord_listener._send
+        try:
+            discord_listener.SYNC_LOG = sync_log
+            discord_listener.STALE_MARKER = stale_marker
+            discord_listener.STALE_THRESHOLD_HOURS = 12.0
+            discord_listener.STALE_NOTIFY_INTERVAL_HOURS = 6.0
+            discord_listener._last_stale_check_at = 0.0
+            discord_listener._send = lambda *a, **k: sent_calls.append(a)
+
+            discord_listener._check_sync_stale_and_ping("fake_token", log_mock)
+        finally:
+            discord_listener.SYNC_LOG = orig_sync_log
+            discord_listener.STALE_MARKER = orig_marker
+            discord_listener.STALE_THRESHOLD_HOURS = orig_threshold
+            discord_listener.STALE_NOTIFY_INTERVAL_HOURS = orig_notify
+            discord_listener._last_stale_check_at = orig_last
+            discord_listener._send = orig_send
+
+        assert len(sent_calls) == 0, "throttle 미만이면 Discord ping 발사 금지"
+
+    def test_stale_alert_message_contains_action_hint(self, tmp_path):
+        """stale 알림 메시지에 '답장하면 처리됩니다' 액션 힌트가 포함돼야 한다."""
+        import os
+
+        sync_log = tmp_path / "voiceflow-sync.log"
+        sync_log.write_text("old", encoding="utf-8")
+        stale_mtime = time.time() - 24 * 3600
+        os.utime(sync_log, (stale_mtime, stale_mtime))
+
+        stale_marker = tmp_path / "voiceflow-stale-notified.txt"
+
+        log_mock = MagicMock()
+        sent_msgs = []
+
+        orig_sync_log = discord_listener.SYNC_LOG
+        orig_marker = discord_listener.STALE_MARKER
+        orig_threshold = discord_listener.STALE_THRESHOLD_HOURS
+        orig_notify_int = discord_listener.STALE_NOTIFY_INTERVAL_HOURS
+        orig_last = discord_listener._last_stale_check_at
+        orig_send = discord_listener._send
+        try:
+            discord_listener.SYNC_LOG = sync_log
+            discord_listener.STALE_MARKER = stale_marker
+            discord_listener.STALE_THRESHOLD_HOURS = 12.0
+            discord_listener.STALE_NOTIFY_INTERVAL_HOURS = 6.0
+            discord_listener._last_stale_check_at = 0.0
+            discord_listener._send = lambda token, msg, **k: sent_msgs.append(msg)
+
+            discord_listener._check_sync_stale_and_ping("fake_token", log_mock)
+        finally:
+            discord_listener.SYNC_LOG = orig_sync_log
+            discord_listener.STALE_MARKER = orig_marker
+            discord_listener.STALE_THRESHOLD_HOURS = orig_threshold
+            discord_listener.STALE_NOTIFY_INTERVAL_HOURS = orig_notify_int
+            discord_listener._last_stale_check_at = orig_last
+            discord_listener._send = orig_send
+
+        assert len(sent_msgs) == 1, "stale 상태에서 알림 1건 발사해야 함"
+        assert "답장하면 처리됩니다" in sent_msgs[0]
